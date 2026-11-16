@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, lt, lte, or, gt } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lt, lte, or, gt, sql } from "drizzle-orm";
 import { runs, type RunSent, type RunSnapshot, type RunTrigger } from "../schema";
 import type { Db } from "../types";
 
@@ -94,6 +94,28 @@ export async function releaseLease(db: Db, runId: number, owner: string): Promis
     .update(runs)
     .set({ leaseOwner: null, leaseUntil: null, updatedAt: new Date() })
     .where(and(eq(runs.id, runId), eq(runs.leaseOwner, owner)));
+}
+
+/**
+ * A run released for a retry (pending, no owner) stays unclaimable for attempts*stepMs, so
+ * neither a new trigger nor any instance's sweeper retries it before its backoff. Null when the
+ * run is finished or someone holds its lease.
+ */
+export async function deferRetry(
+  db: Db,
+  runId: number,
+  now: Date,
+  stepMs: number,
+): Promise<{ attempts: number; delayMs: number } | null> {
+  const [row] = await db
+    .update(runs)
+    .set({
+      leaseUntil: sql`${now.toISOString()}::timestamptz + ${runs.attempts} * ${stepMs}::int * interval '1 millisecond'`,
+      updatedAt: now,
+    })
+    .where(and(eq(runs.id, runId), isNull(runs.leaseOwner), inArray(runs.status, [...PENDING])))
+    .returning({ attempts: runs.attempts });
+  return row ? { attempts: row.attempts, delayMs: row.attempts * stepMs } : null;
 }
 
 /** Chats whose head (oldest pending) run could be claimed right now. */

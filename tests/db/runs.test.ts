@@ -4,6 +4,7 @@ import {
   chatsWithPendingRuns,
   claimNextRun,
   createRun,
+  deferRetry,
   deleteChatRuns,
   finishRun,
   hasActiveRun,
@@ -109,4 +110,20 @@ test("prune and delete touch finished runs only", async () => {
   expect((await claimNextRun(db, 1, "y", 1000, t0))?.id).toBe(b.id);
   await deleteChatRuns(db, 1);
   expect((await claimNextRun(db, 1, "y", 1000, at(5000)))?.id).toBe(b.id);
+});
+
+test("deferRetry holds a released run back for attempts*step, and touches nothing else", async () => {
+  const db = await testDb();
+  const a = await mk(db);
+  await claimNextRun(db, 1, "x", 1000, t0);
+  expect(await deferRetry(db, a.id, t0, 30_000)).toBeNull(); // still leased by x
+  await saveCheckpoint(db, a.id, "x", { attempts: 2 });
+  await releaseLease(db, a.id, "x");
+  expect(await deferRetry(db, a.id, t0, 30_000)).toEqual({ attempts: 2, delayMs: 60_000 });
+  expect(await claimNextRun(db, 1, "y", 1000, at(59_999))).toBeNull();
+  expect(await chatsWithPendingRuns(db, at(59_999))).toEqual([]);
+  expect(await chatsWithPendingRuns(db, at(60_000))).toEqual([1]);
+  expect((await claimNextRun(db, 1, "y", 1000, at(60_000)))?.id).toBe(a.id);
+  await finishRun(db, a.id, "y", "done");
+  expect(await deferRetry(db, a.id, at(70_000), 30_000)).toBeNull(); // finished
 });
