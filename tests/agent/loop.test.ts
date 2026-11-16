@@ -512,6 +512,78 @@ describe("processRun", () => {
     expect(JSON.stringify(llm.calls[0]!.messages)).not.toContain("secret old");
   });
 
+  it("a reaction to the bot's own message that heads the window puts that message in the request", async () => {
+    const db = await testDb();
+    await upsertGroup(db, { chatId: CHAT, title: "Family", settings: defaultSettings("en"), token: "tok" });
+    await insertMessage(db, msg(CHAT, 1, { isBot: true, fromId: null, fromName: "Bot", text: "the secret recipe is butter" }));
+    await insertMessage(db, msg(CHAT, 2, { text: "thanks" }));
+    await createRun(db, {
+      chatId: CHAT,
+      threadId: null,
+      trigger: { type: "reaction", messageId: 1, targetMessageId: 1, requesterId: 10, requesterName: "Avi", emoji: "👾" },
+    });
+    const llm = fakeLlm([reply([text("glad")])]);
+    await processRun((await claimNextRun(db, CHAT, "A", LEASE, T0))!, deps(db, { llm }));
+    const json = JSON.stringify(llm.calls[0]!.messages);
+    expect(json).toContain("the secret recipe is butter");
+    expect(json.indexOf("the secret recipe")).toBeLessThan(json.indexOf("thanks"));
+  });
+
+  it("a reply to a bot message that heads the window puts that message in the request", async () => {
+    const db = await testDb();
+    await upsertGroup(db, { chatId: CHAT, title: "Family", settings: defaultSettings("en"), token: "tok" });
+    await insertMessage(db, msg(CHAT, 1, { isBot: true, fromId: null, fromName: "Bot", text: "the secret recipe is butter" }));
+    await insertMessage(db, msg(CHAT, 2, { text: "and the sugar?", replyToId: 1 }));
+    await createRun(db, {
+      chatId: CHAT,
+      threadId: null,
+      trigger: { type: "reply", messageId: 2, targetMessageId: 2, requesterId: 10, requesterName: "Avi" },
+    });
+    const llm = fakeLlm([reply([text("two cups")])]);
+    await processRun((await claimNextRun(db, CHAT, "A", LEASE, T0))!, deps(db, { llm }));
+    expect(JSON.stringify(llm.calls[0]!.messages)).toContain("the secret recipe is butter");
+  });
+
+  it("a permanent failure on part 2 posts the cut-short notice, not the apology", async () => {
+    const { db, run } = await setup();
+    const para = (c: string) => c.repeat(3000);
+    const llm = fakeLlm([reply([text([para("a"), para("b")].join("\n\n"))])]);
+    const tg = fakeTg();
+    const send = tg.sendMessage.bind(tg);
+    tg.sendMessage = (async (...args: Parameters<FakeTg["sendMessage"]>) => {
+      if (String(args[1]).startsWith("b")) throw new GrammyError("refused", { ok: false, error_code: 400, description: "Bad Request" }, "sendMessage", {});
+      return send(...args);
+    }) as FakeTg["sendMessage"];
+    await processRun(run, deps(db, { llm, tg }));
+    expect((await readRun(db, run.id)).status).toBe("failed");
+    const bodies = sends(tg).map(sentText);
+    expect(bodies.at(-1)).toBe(t("en", "cutShort"));
+    expect(bodies).not.toContain(t("en", "runFailed"));
+  });
+
+  it("the sources message fails: the retry sends only it, the last part is not repeated", async () => {
+    const { db, run } = await setup();
+    const sources = [1, 2, 3, 4, 5].map((n) => cite(`https://example.com/${n}/${"p".repeat(200)}`, `Source ${n} ${"t".repeat(100)}`));
+    const llm = fakeLlm([reply([text("z".repeat(3400), sources)])]);
+    const tg = fakeTg();
+    const send = tg.sendMessage.bind(tg);
+    let down = true;
+    tg.sendMessage = (async (...args: Parameters<FakeTg["sendMessage"]>) => {
+      if (down && String(args[1]).startsWith("**>")) throw new Error("socket hang up");
+      return send(...args);
+    }) as FakeTg["sendMessage"];
+    await processRun(run, deps(db, { llm, tg }));
+    expect((await readRun(db, run.id)).status).toBe("running");
+    down = false;
+    await processRun(await reclaim(db, "B", later(2)), deps(db, { llm: fakeLlm([]), tg, owner: "B" }));
+    const row = await readRun(db, run.id);
+    expect(row.status).toBe("done");
+    const bodies = sends(tg).map(sentText);
+    expect(bodies.filter((b) => b.startsWith("z"))).toHaveLength(1);
+    expect(bodies.filter((b) => b.startsWith("**>"))).toHaveLength(1);
+    expect(row.sent.tailSent).toBe(true);
+  });
+
   it("an empty answer to a mention sends the localized no-answer notice", async () => {
     const { db, run } = await setup();
     const llm = fakeLlm([reply([{ type: "thinking", thinking: "", signature: "sig" }])]);

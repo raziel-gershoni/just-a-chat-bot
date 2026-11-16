@@ -32,6 +32,8 @@ export type RunSent = {
   bakeryNoticeSent?: boolean;
   /** How many answer parts are delivered (each recorded as it lands); a retry sends only the rest. */
   partsSent?: number;
+  /** The sources message that follows the last part when it doesn't fit in it is delivered. */
+  tailSent?: boolean;
 };
 
 export type RunSnapshot = {

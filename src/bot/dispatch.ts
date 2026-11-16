@@ -104,7 +104,7 @@ async function onMessage(msg: Message, deps: BotDeps): Promise<void> {
     await postSettingsButton(deps, group, "settingsCommand", { replyTo: msg.message_id, threadId });
     return;
   }
-  if (isServiceMessage(row)) return ignored("service_message", { chat_id: chat.id, message_id: msg.message_id });
+  if (isServiceMessage(msg)) return ignored("service_message", { chat_id: chat.id, message_id: msg.message_id });
 
   // A row that already exists is a redelivery: trigger detection still runs (the first
   // delivery may have failed before creating the run); only the file cleanup and the chime

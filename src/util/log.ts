@@ -13,14 +13,18 @@ export function log(event: string, fields: Record<string, unknown> = {}): void {
   console.log(text);
 }
 
-// JSON.stringify replacer: BigInt as a string, a repeated (circular) object as "[circular]".
+// JSON.stringify replacer: BigInt as a string, an object that contains itself (a real cycle) as
+// "[circular]". Only the ancestors of the current value count, so a shared, non-circular
+// reference is logged in full wherever it appears.
 function safeValue() {
-  const seen = new WeakSet<object>();
-  return (_key: string, value: unknown) => {
+  const ancestors: object[] = [];
+  return function (this: unknown, _key: string, value: unknown) {
     if (typeof value === "bigint") return value.toString();
     if (typeof value === "object" && value !== null) {
-      if (seen.has(value)) return "[circular]";
-      seen.add(value);
+      // `this` is the holder of this value: everything above it on the stack is a finished sibling branch.
+      while (ancestors.length > 0 && ancestors[ancestors.length - 1] !== this) ancestors.pop();
+      if (ancestors.includes(value)) return "[circular]";
+      ancestors.push(value);
     }
     return value;
   };

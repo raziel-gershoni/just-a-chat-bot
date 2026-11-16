@@ -22,6 +22,12 @@ describe("log", () => {
     expect(line()).toMatchObject({ event: "x", big: "10", a: { name: "a", self: "[circular]" } });
   });
 
+  it("keeps a shared, non-circular reference everywhere it appears", () => {
+    const arr = [1, 2];
+    log("z", { a: arr, b: arr, c: { d: arr } });
+    expect(line()).toMatchObject({ a: [1, 2], b: [1, 2], c: { d: [1, 2] } });
+  });
+
   it("a throwing toJSON still logs the event", () => {
     expect(() => log("y", { bad: { toJSON() { throw new Error("nope"); } } })).not.toThrow();
     expect(line()).toMatchObject({ event: "y", log_error: "nope" });

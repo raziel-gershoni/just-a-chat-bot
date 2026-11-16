@@ -210,6 +210,14 @@ async function buildSnapshot(ctx: Ctx, group: Group, settings: GroupSettings): P
   const all = [...leading, ...rows];
   const target = all.find((r) => r.messageId === trigger.targetMessageId);
   const focus = [trigger.messageId, trigger.targetMessageId, target?.replyToId].filter((id): id is number => id != null);
+  // Bot rows at the head of the window would be dropped as leading assistant turns. A focus one
+  // (the target, or what it replies to) goes first as a <msg> of its own, like an out-of-window
+  // focus row, so the model always sees what it was asked about.
+  const firstHuman = rows.findIndex((r) => !r.isBot);
+  const headBots = rows.slice(0, firstHuman === -1 ? rows.length : firstHuman);
+  const moved = headBots.filter((r) => focus.includes(r.messageId));
+  const turnRows = moved.length ? rows.filter((r) => !moved.includes(r)) : rows;
+  const leadRows = [...leading, ...moved].sort((a, b) => a.seq - b.seq);
   const attach = new Map<number, Attach>();
   const uploadDeps = {
     db: deps.db,
@@ -223,12 +231,7 @@ async function buildSnapshot(ctx: Ctx, group: Group, settings: GroupSettings): P
     if (fileId) attach.set(row.messageId, { type: row.media?.kind === "pdf" ? "document" : "image", fileId });
   }
   const noNewer = t(ctx.lang, "noNewerMessages");
-  let transcript = buildTranscript(rows, { attach, noNewer, leading });
-  if (transcript.length === 0 && target && !leading.includes(target)) {
-    // Only bot rows in the window (e.g. a reaction to the bot's own message after a forget):
-    // the target goes first as a message of its own, so the request is never empty.
-    transcript = buildTranscript(rows.filter((r) => r !== target), { attach, noNewer, leading: [...leading, target] });
-  }
+  const transcript = buildTranscript(turnRows, { attach, noNewer, leading: leadRows });
   const models = await deps.models();
   const snap = newSnapshot({
     settings,
@@ -379,7 +382,12 @@ async function deliverAnswer(ctx: Ctx, end: End, blocks: BetaContentBlock[]): Pr
     threadId: run.threadId,
     tailMd2: sourcesBlock(t(lang, "sourcesLabel"), sources),
     from,
+    tailSent: ctx.sent.tailSent,
     onPartSent: (part) => onPartSent(ctx, part),
+    onTailSent: async (ids) => {
+      ctx.sent = { ...ctx.sent, answerIds: [...ctx.sent.answerIds, ...ids], tailSent: true };
+      await checkpoint(ctx, { sent: ctx.sent });
+    },
   });
   ctx.sent = { ...ctx.sent, answered: true };
   await checkpoint(ctx, { sent: ctx.sent });
@@ -465,6 +473,8 @@ async function onError(ctx: Ctx, err: unknown): Promise<void> {
 // Ends the run as failed. Cards for proposals already made and the bakery notice (after an
 // answer) still go out (best effort), and
 // whoever is waiting gets an apology, unless an answer already went out or nobody asked (chime).
+// When only some answer parts went out, the apology would sit under a half-visible answer, so
+// the localized "cut short" notice goes out instead.
 async function fail(ctx: Ctx, reason: string): Promise<void> {
   const { run, deps } = ctx;
   if (ctx.snap) {
@@ -484,9 +494,10 @@ async function fail(ctx: Ctx, reason: string): Promise<void> {
   if (!(await finishRun(deps.db, run.id, deps.owner, "failed", reason))) throw new LeaseLost();
   log("run.failed", { ...ids(ctx), reason, chime: ctx.chime, answered: ctx.sent.answered });
   if (ctx.chime || ctx.sent.answered) return;
+  const partial = (ctx.sent.partsSent ?? 0) > 0;
   try {
-    await sendText(deps.tg, run.chatId, t(ctx.lang, "runFailed"), {
-      replyTo: run.trigger.targetMessageId,
+    await sendText(deps.tg, run.chatId, t(ctx.lang, partial ? "cutShort" : "runFailed"), {
+      ...(partial ? {} : { replyTo: run.trigger.targetMessageId }),
       threadId: run.threadId,
     });
   } catch (err) {

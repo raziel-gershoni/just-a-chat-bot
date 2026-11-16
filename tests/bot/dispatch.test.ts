@@ -222,6 +222,16 @@ describe("message", () => {
     expect(enqueue).toHaveBeenCalledWith(-100, 2000);
   });
 
+  it("a location sent as a reply to the bot is stored and creates a reply run", async () => {
+    await handleUpdate(msgUpdate(groupMsg(-100, 2, {
+      text: undefined,
+      location: { latitude: 32, longitude: 34.8 },
+      reply_to_message: groupMsg(-100, 1, { from: BOT }),
+    })), deps);
+    expect(await getMessage(db, -100, 2)).not.toBeNull();
+    expect((await allRuns())[0]!.trigger.type).toBe("reply");
+  });
+
   it("a reply to the bot creates a reply run", async () => {
     await handleUpdate(msgUpdate(groupMsg(-100, 2, { reply_to_message: groupMsg(-100, 1, { from: BOT }) })), deps);
     expect((await allRuns())[0]!.trigger.type).toBe("reply");

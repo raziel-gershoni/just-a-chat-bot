@@ -177,7 +177,8 @@ export type SentPart = { index: number; text: string; ids: number[] };
 // Sends a Claude answer (Markdown): split into parts, each rendered as MarkdownV2 with a
 // plain-text fallback. Only the first part replies to `replyTo`; all keep the thread.
 // `tailMd2` (pre-escaped MarkdownV2, e.g. a sources block) is appended to the last part
-// when the result fits in 4096 characters, else sent as its own message.
+// when the result fits in 4096 characters, else sent as its own message after the last part
+// was reported; that tail is reported to `onTailSent`, and `tailSent` skips it on a retry.
 // Each delivered part is reported to `onPartSent` (awaited) before the next is sent, so the
 // caller can checkpoint it; `from` skips the parts already delivered by an earlier attempt.
 // Returns the ids sent by this call, in order; throws as soon as a part can't be delivered
@@ -186,30 +187,43 @@ export type SentPart = { index: number; text: string; ids: number[] };
 // whole message.
 export async function sendAnswer(
   api: TgApi, chatId: number, markdown: string,
-  opts: ReplyOpts & { tailMd2?: string; from?: number; onPartSent?: (part: SentPart) => Promise<void> },
+  opts: ReplyOpts & {
+    tailMd2?: string; from?: number; tailSent?: boolean;
+    onPartSent?: (part: SentPart) => Promise<void>;
+    onTailSent?: (ids: number[]) => Promise<void>;
+  },
 ): Promise<number[]> {
   const parts = answerParts(markdown);
   const tail = opts.tailMd2 ? `\n\n${opts.tailMd2}` : "";
   const ids: number[] = [];
+  // Whether the sources tail rides along with the last part, or goes out as its own message.
+  const lastPart = parts[parts.length - 1] ?? "";
+  // Same measure as renderedLength: escapes count once, markup characters count.
+  const shown = renderedLength(lastPart) + tail.replace(/\\([\s\S])/g, "$1").length;
+  const separateTail = tail !== "" && shown > TELEGRAM_MAX_CHARS;
   for (const [i, part] of parts.entries()) {
     if (i < (opts.from ?? 0)) continue;
     const last = i === parts.length - 1;
-    const partIds: number[] = [];
+    let partIds: number[];
     try {
-      let attach = "";
-      if (last && tail) {
-        // Same measure as renderedLength: escapes count once, markup characters count.
-        const shown = renderedLength(part) + tail.replace(/\\([\s\S])/g, "$1").length;
-        if (shown <= TELEGRAM_MAX_CHARS) attach = tail;
-      }
-      partIds.push(...await sendPart(api, chatId, part, attach, opts, i === 0));
-      if (last && tail && !attach) partIds.push(...await sendTail(api, chatId, tail, opts));
+      partIds = await sendPart(api, chatId, part, last && !separateTail ? tail : "", opts, i === 0);
     } catch (err) {
       log("telegram.part_failed", { chat_id: chatId, part: i + 1, of: parts.length, error: errorText(err) });
       throw err;
     }
     ids.push(...partIds);
     await opts.onPartSent?.({ index: i, text: part, ids: partIds });
+  }
+  if (separateTail && !opts.tailSent) {
+    let tailIds: number[];
+    try {
+      tailIds = await sendTail(api, chatId, tail, opts);
+    } catch (err) {
+      log("telegram.tail_failed", { chat_id: chatId, error: errorText(err) });
+      throw err;
+    }
+    ids.push(...tailIds);
+    await opts.onTailSent?.(tailIds);
   }
   return ids;
 }
