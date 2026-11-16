@@ -27,6 +27,7 @@ Claude-powered Telegram group bot on Railway. Spec: `docs/superpowers/specs/2026
 - No silent failures: every `catch` calls `log(event, fields)` with `errorText(err)`. No artificial timeouts in app code.
 - Times shown are Israel time, 24h, via `Intl.DateTimeFormat`.
 - Never store the bakery key (`BAKERY_MCP_KEY`): read it from env at call time, never put it in run snapshots, DB, logs or commits. `errorText` scrubs bot tokens and `bmcp_` keys.
+- The repo is public, and GitHub secret scanning flags fake credentials too. Test fixtures never contain provider-shaped credential literals (Telegram bot token, `sk-ant-`, `ghp_`, `AKIA`, PEM, JWT, a postgres URL with a password): build fakes at runtime, e.g. `["123456789", "AA" + "x".repeat(33)].join(":")`.
 - Migrations: generate with `npm run db:generate`, commit the SQL in `drizzle/`. They are applied by the Railway pre-deploy command (`drizzle-kit migrate`), never by the build.
 - The pre-deploy migration runs while the old deployment still serves traffic, so every migration must work with the old code too. To drop or rename a column, first ship code that no longer uses it, then drop it in a later deploy.
 - Railway deploys do not read `.railway/railway.ts`; changing it needs `railway config plan` then `apply`.
