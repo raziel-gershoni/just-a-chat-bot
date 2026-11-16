@@ -3,6 +3,7 @@ import { classifyJson } from "../agent/classify";
 import type { Llm } from "../agent/llm";
 import type { StoredMessage } from "../db/repo/messages";
 import type { GroupSettings } from "../settings/schema";
+import { textWithTags } from "../conversation/mentions";
 import { israelTime } from "../util/time";
 
 export type ChimeDecision = { chime: boolean; reason: string };
@@ -58,7 +59,7 @@ export function chimeTranscript(rows: StoredMessage[]): string {
   return rows
     .map((r) => {
       const label = r.media ? ` [${r.media.label}]` : "";
-      return `[${israelTime(r.date).slice(11)}] ${r.isBot ? "Bot" : r.fromName}: ${r.text}${label}`;
+      return `[${israelTime(r.date).slice(11)}] ${r.isBot ? "Bot" : r.fromName}: ${textWithTags(r.text, r.entities)}${label}`;
     })
     .join("\n");
 }

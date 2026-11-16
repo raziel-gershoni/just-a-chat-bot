@@ -7,7 +7,7 @@ import { processRun, type LoopDeps } from "@/src/agent/loop";
 import { upsertGroup, setGroupActive } from "@/src/db/repo/groups";
 import { getMessage, insertMessage, setAnthropicFileId } from "@/src/db/repo/messages";
 import { claimNextRun, createRun, type RunRow } from "@/src/db/repo/runs";
-import { groups, runs, type RunTrigger } from "@/src/db/schema";
+import { groups, messages as messagesTable, runs, type RunTrigger } from "@/src/db/schema";
 import type { Db } from "@/src/db/types";
 import { t } from "@/src/i18n";
 import { DEFAULT_MODEL } from "@/src/models/catalog";
@@ -788,6 +788,17 @@ describe("a reply to the bot is judged before it is answered", () => {
     const input = JSON.stringify(llm.classifyCalls[0]!.messages);
     expect(input).toContain("what time is it in Tokyo?");
     expect(input).not.toContain("later 20");
+  });
+
+  it("the judge sees a tag of a member without a username as @Name", async () => {
+    const { db, run } = await replyRun("ישועה הכוונה הייתה 900 גרם?");
+    await db.update(messagesTable).set({
+      entities: [{ type: "text_mention", offset: 0, length: 5, user: { id: 7, is_bot: false, first_name: "Yeshua" } }],
+    }).where(sql`${messagesTable.chatId} = ${CHAT} and ${messagesTable.messageId} = 5`);
+    const llm = fakeLlm([], { classify: [judged(false, "asks his wife")] });
+    await processRun(run, deps(db, { llm }));
+    expect(JSON.stringify(llm.classifyCalls[0]!.messages)).toContain("@ישועה הכוונה");
+    expect(String(llm.classifyCalls[0]!.system)).toContain("@ is a tag");
   });
 
   it("the judge knows the bot's name, so a reply that names it counts as addressed to it", async () => {

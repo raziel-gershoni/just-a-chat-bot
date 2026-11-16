@@ -2,6 +2,7 @@ import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta/messages
 import type { StoredMessage } from "../db/repo/messages";
 import { log } from "../util/log";
 import { israelTime } from "../util/time";
+import { textWithTags } from "./mentions";
 
 export type Attach = { type: "image" | "document"; fileId: string };
 
@@ -24,7 +25,7 @@ function humanBlocks(r: StoredMessage, attach: Map<number, Attach>): Block[] {
   const att = attach.get(r.messageId);
   const label = r.media ? ` [${esc(r.media.label)}${att ? " attached" : ""}]` : "";
   const reply = r.replyToId != null ? ` reply_to="${r.replyToId}"` : "";
-  const text = `<msg id="${r.messageId}" from="${escAttr(r.fromName)}" at="${israelTime(r.date)}"${reply}>${esc(r.text)}${label}</msg>`;
+  const text = `<msg id="${r.messageId}" from="${escAttr(r.fromName)}" at="${israelTime(r.date)}"${reply}>${esc(textWithTags(r.text, r.entities))}${label}</msg>`;
   const blocks: Block[] = [{ type: "text", text }];
   if (att) blocks.push({ type: att.type, source: { type: "file", file_id: att.fileId } });
   return blocks;

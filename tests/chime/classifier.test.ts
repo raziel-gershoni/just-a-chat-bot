@@ -79,4 +79,8 @@ describe("chimeTranscript", () => {
     ]);
     expect(t).toBe("[10:05] Dana: hello\n[10:05] Bot: hi\n[10:05] Dana: look [photo]");
   });
+  it("shows a tag of a member without a username as @Name", () => {
+    const entities = [{ type: "text_mention", offset: 0, length: 3, user: { id: 7, is_bot: false, first_name: "Avi" } }];
+    expect(chimeTranscript([row({ text: "Avi look", entities })])).toBe("[10:05] Dana: @Avi look");
+  });
 });
