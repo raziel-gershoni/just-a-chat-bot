@@ -4,9 +4,9 @@ import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { processRun, type LoopDeps } from "@/src/agent/loop";
 import { upsertGroup, setGroupActive } from "@/src/db/repo/groups";
-import { getMessage, insertMessage } from "@/src/db/repo/messages";
+import { getMessage, insertMessage, setAnthropicFileId } from "@/src/db/repo/messages";
 import { claimNextRun, createRun, type RunRow } from "@/src/db/repo/runs";
-import { runs, type RunTrigger } from "@/src/db/schema";
+import { groups, runs, type RunTrigger } from "@/src/db/schema";
 import type { Db } from "@/src/db/types";
 import { t } from "@/src/i18n";
 import { DEFAULT_MODEL } from "@/src/models/catalog";
@@ -155,6 +155,17 @@ describe("processRun", () => {
       output_tokens: 20,
       model: "claude-opus-5-5",
     });
+  });
+
+  it("hands the files of rows pruned by the stored answer to deleteFiles", async () => {
+    const { db, run } = await setup();
+    await setAnthropicFileId(db, CHAT, 4, "file_old");
+    // The answer row lands 800+ rows after the seeded ones, so retention prunes them.
+    await db.update(groups).set({ nextSeq: 1000 }).where(eq(groups.chatId, CHAT));
+    const d = deps(db, { llm: fakeLlm([reply([text("Hello")])]) });
+    await processRun(run, d);
+    expect(d.deleteFiles).toHaveBeenCalledWith(["file_old"]);
+    expect(await getMessage(db, CHAT, 4)).toBeNull();
   });
 
   it("attaches recent media as uploaded files", async () => {
