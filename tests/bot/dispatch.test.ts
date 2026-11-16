@@ -167,6 +167,17 @@ describe("message", () => {
     expect(await getGroup(db, -100)).toBeNull();
   });
 
+  it("stores and triggers on an anonymous-admin mention (fake bot sender + sender_chat)", async () => {
+    await handleUpdate(
+      mention(-100, 1, { from: user(1087968824, { is_bot: true, first_name: "Group" }), sender_chat: { id: -100, type: "supergroup", title: "G" } }),
+      deps,
+    );
+    const row = await getMessage(db, -100, 1);
+    expect(row).not.toBeNull();
+    expect(row!.isBot).toBe(false);
+    expect((await allRuns())[0]!.trigger.type).toBe("mention");
+  });
+
   it("answers a private message with groupsOnly in the sender's language", async () => {
     await handleUpdate(msgUpdate(groupMsg(5, 1, { chat: { id: 5, type: "private" }, from: user(5, { language_code: "ru" }) })), deps);
     expect(sent()).toHaveLength(1);

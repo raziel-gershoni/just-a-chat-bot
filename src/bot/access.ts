@@ -35,6 +35,12 @@ export async function ensureGroup(
   if (existing?.active) return existing;
 
   if (!(await ownerIsMember(deps, chat.id))) {
+    log("bot.leaving_group", {
+      chat_id: chat.id,
+      adder_id: adder?.id ?? null,
+      adder_name: adder ? [adder.first_name, adder.last_name].filter(Boolean).join(" ") : null,
+      adder_username: adder?.username ?? null,
+    });
     try {
       await sendText(deps.tg, chat.id, t(pickLang(adder?.language_code), "ownerMissingLeaving"));
     } catch (err) {

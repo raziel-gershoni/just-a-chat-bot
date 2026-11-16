@@ -52,7 +52,7 @@ export function messageToRow(msg: Message): NewMessage {
     threadId: msg.is_topic_message ? (msg.message_thread_id ?? null) : null,
     fromId: from?.id ?? null,
     fromName,
-    isBot: from?.is_bot ?? false,
+    isBot: !msg.sender_chat && (from?.is_bot ?? false),
     date: new Date(msg.date * 1000),
     text: msg.text ?? msg.caption ?? "",
     entities: msg.entities ?? msg.caption_entities ?? null,

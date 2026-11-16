@@ -88,7 +88,8 @@ async function onMessage(msg: Message, deps: BotDeps): Promise<void> {
     await migrateChat(deps.db, chat.id, msg.migrate_to_chat_id);
     return;
   }
-  if (msg.from?.is_bot) return ignored("from_bot", { chat_id: chat.id });
+  // Anonymous admins and channel posts arrive as a fake bot user plus sender_chat: keep those.
+  if (msg.from?.is_bot && !msg.sender_chat) return ignored("from_bot", { chat_id: chat.id });
 
   const group = await ensureGroup(deps, chat, msg.from);
   if (!group) return;
