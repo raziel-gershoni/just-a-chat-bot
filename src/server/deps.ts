@@ -17,6 +17,7 @@ import { createChimeScheduler } from "@/src/chime/scheduler";
 import { env } from "@/src/config/env";
 import { db } from "@/src/db/client";
 import { getGroup } from "@/src/db/repo/groups";
+import type { MiniDeps } from "@/src/miniapp/service";
 import { getModels } from "@/src/models/catalog";
 import { parseSettings } from "@/src/settings/schema";
 import type { StartupDeps } from "@/src/server/startup";
@@ -33,6 +34,8 @@ export type ServerDeps = {
   /** Runs `bot.init()` (one getMe) once; every caller shares the result. */
   botInfo(): Promise<{ id: number; username: string }>;
   webhook: WebhookDeps;
+  /** What the Mini App API needs. */
+  miniapp: MiniDeps;
   /** Everything startup() needs. */
   startup: StartupDeps;
 };
@@ -150,6 +153,19 @@ function build(): ServerDeps {
     runner,
     hooks,
     botInfo,
+    miniapp: {
+      db: database,
+      tg: bot.api,
+      llm,
+      now,
+      env: {
+        TELEGRAM_BOT_TOKEN: e.TELEGRAM_BOT_TOKEN,
+        TELEGRAM_OWNER_ID: e.TELEGRAM_OWNER_ID,
+        JWT_SECRET: e.JWT_SECRET,
+        BAKERY_URL: e.BAKERY_URL,
+        BAKERY_MCP_KEY: e.BAKERY_MCP_KEY,
+      },
+    },
     webhook: { secret: e.TELEGRAM_WEBHOOK_SECRET, db: database, handle },
     startup: { db: database, tg: bot.api, runner, env: e, stops: [chime.stop], now },
   };
