@@ -44,6 +44,8 @@ export type RunSnapshot = {
   pauseCount: number;
   startIndex: number;
   bakeryDropped?: boolean;
+  /** stop_reason of the last step, so a resumed run knows whether to call Claude again or finalize. */
+  stopReason?: string | null;
 };
 
 export type MessageMedia = {
