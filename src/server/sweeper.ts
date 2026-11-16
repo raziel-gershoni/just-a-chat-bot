@@ -12,7 +12,7 @@ export type SweepDeps = { db: Db; runner: Pick<Runner, "enqueue">; now(): Date }
 
 const DAY_MS = 86_400_000;
 const RUNS_KEPT_MS = 30 * DAY_MS;
-// Telegram keeps undelivered updates for 24 h, so a redelivery can't be older than this.
+// Telegram keeps undelivered updates for 24 h, so 2 days of update ids covers every redelivery.
 const UPDATES_KEPT_MS = 2 * DAY_MS;
 
 export async function sweep(deps: SweepDeps): Promise<void> {
