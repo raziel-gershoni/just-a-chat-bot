@@ -10,6 +10,8 @@ const DEFAULT_MAX_AGE_MS = 3_600_000;
 export type InitDataResult = {
   user: { id: number; firstName: string; languageCode?: string };
   startParam: string | null;
+  /** The kind of chat a direct link was opened from ("group", "supergroup", "private"...), else null. */
+  chatType: string | null;
 };
 
 export function verifyInitData(
@@ -53,5 +55,6 @@ export function verifyInitData(
       ...(typeof user.language_code === "string" ? { languageCode: user.language_code } : {}),
     },
     startParam: params.get("start_param") || null,
+    chatType: params.get("chat_type") || null,
   };
 }

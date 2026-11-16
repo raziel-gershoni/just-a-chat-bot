@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { GrammyError } from "grammy";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createSession } from "@/src/miniapp/auth";
 import { signSession, verifySession } from "@/src/miniapp/jwt";
 import { upsertGroup } from "@/src/db/repo/groups";
@@ -14,11 +14,12 @@ const SECRET = "s".repeat(40);
 const NOW = new Date("2026-11-16T12:00:00Z");
 const OWNER = 7;
 
-function sign(userId: number, startParam: string | null, lang = "he"): string {
+function sign(userId: number, startParam: string | null, lang = "he", extra: Record<string, string> = {}): string {
   const fields: Record<string, string> = {
     auth_date: String(Math.floor(NOW.getTime() / 1000) - 10),
     user: JSON.stringify({ id: userId, first_name: "D", language_code: lang }),
     ...(startParam ? { start_param: startParam } : {}),
+    ...extra,
   };
   const check = Object.entries(fields).sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${k}=${v}`).join("\n");
   const key = createHmac("sha256", "WebAppData").update(TOKEN).digest();
@@ -72,6 +73,22 @@ describe("createSession", () => {
     expect(await createSession(deps, sign(10, "nope"))).toEqual({ error: "unknown_group", status: 404 });
     expect(await createSession(deps, sign(10, null))).toEqual({ error: "unknown_group", status: 404 });
     expect(await createSession(deps, sign(10, "tok_off"))).toEqual({ error: "unknown_group", status: 404 });
+  });
+  it("logs why the group is unknown and which kind of chat the app was opened from", async () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await createSession(deps, sign(10, null));
+      await createSession(deps, sign(10, "nope", "he", { chat_type: "group" }));
+      await createSession(deps, sign(10, "tok_off"));
+      const lines = spy.mock.calls
+        .map((c) => JSON.parse(String(c[0])) as Record<string, unknown>)
+        .filter((l) => l.event === "miniapp.session_unknown_group");
+      expect(lines.map((l) => [l.reason, l.chat_type])).toEqual([
+        ["no_start_param", null], ["no_group", "group"], ["inactive", null],
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
   });
   it("a user who left -> not_member (403)", async () => {
     expect(await createSession(deps, sign(11, "tok_a"))).toEqual({ error: "not_member", status: 403 });

@@ -38,7 +38,11 @@ export async function createSession(deps: MiniDeps, initData: string): Promise<S
   }
   const group = data.startParam ? await getGroupByToken(deps.db, data.startParam) : null;
   if (!group?.active) {
-    log("miniapp.session_unknown_group", { user_id: data.user.id });
+    log("miniapp.session_unknown_group", {
+      user_id: data.user.id,
+      reason: !data.startParam ? "no_start_param" : group ? "inactive" : "no_group",
+      chat_type: data.chatType,
+    });
     return { error: "unknown_group", status: 404 };
   }
   const member = await membership(deps, group.chatId, data.user.id);

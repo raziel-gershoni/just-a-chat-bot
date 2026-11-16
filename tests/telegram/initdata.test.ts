@@ -21,8 +21,11 @@ const fields = (ageS: number, extra: Record<string, string> = {}) => ({
 describe("verifyInitData", () => {
   it("returns the user and start param for a valid string", () => {
     expect(verifyInitData(sign(fields(10)), TOKEN, NOW)).toEqual({
-      user: { id: 99, firstName: "Dana", languageCode: "he" }, startParam: "tok_1",
+      user: { id: 99, firstName: "Dana", languageCode: "he" }, startParam: "tok_1", chatType: null,
     });
+  });
+  it("returns the chat type when the app was opened from a chat link", () => {
+    expect(verifyInitData(sign(fields(10, { chat_type: "group" })), TOKEN, NOW)?.chatType).toBe("group");
   });
   it("startParam is null when absent", () => {
     const f = fields(10); delete (f as Record<string, string>).start_param;
