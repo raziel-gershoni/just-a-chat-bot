@@ -7,7 +7,6 @@ const schema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1),
   TELEGRAM_WEBHOOK_SECRET: z.string().min(1),
   TELEGRAM_OWNER_ID: z.coerce.number().int().positive(),
-  TELEGRAM_MINIAPP_SHORT_NAME: z.string().min(1),
   ANTHROPIC_API_KEY: z.string().min(1),
   DATABASE_URL: z.string().min(1),
   JWT_SECRET: z.string().min(32),
@@ -23,7 +22,6 @@ export type Env = {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   TELEGRAM_OWNER_ID: number;
-  TELEGRAM_MINIAPP_SHORT_NAME: string;
   ANTHROPIC_API_KEY: string;
   DATABASE_URL: string;
   JWT_SECRET: string;
@@ -46,7 +44,6 @@ export function loadEnv(source: Record<string, string | undefined> = process.env
     TELEGRAM_BOT_TOKEN: v.TELEGRAM_BOT_TOKEN,
     TELEGRAM_WEBHOOK_SECRET: v.TELEGRAM_WEBHOOK_SECRET,
     TELEGRAM_OWNER_ID: v.TELEGRAM_OWNER_ID,
-    TELEGRAM_MINIAPP_SHORT_NAME: v.TELEGRAM_MINIAPP_SHORT_NAME,
     ANTHROPIC_API_KEY: v.ANTHROPIC_API_KEY,
     DATABASE_URL: v.DATABASE_URL,
     JWT_SECRET: v.JWT_SECRET,

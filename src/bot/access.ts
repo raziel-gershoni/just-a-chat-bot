@@ -31,17 +31,18 @@ async function ownerIsMember(deps: BotDeps, chatId: number): Promise<boolean> {
 }
 
 /**
- * Posts `textKey` with the group's settings button (the Mini App link carrying the group token).
- * The one place that builds that button: the welcome and the /settings command both use it.
+ * Posts `textKey` with the group's settings button: a link to the bot's Main App carrying the
+ * group token (Telegram passes it to the app as start_param). The one place that builds that
+ * button: the welcome and the /settings command both use it.
  */
 export async function postSettingsButton(
-  deps: Pick<BotDeps, "tg" | "botUsername" | "env">,
+  deps: Pick<BotDeps, "tg" | "botUsername">,
   group: Group,
   textKey: Extract<MsgKey, "welcome" | "settingsCommand">,
   opts: { replyTo?: number; threadId?: number | null } = {},
 ): Promise<void> {
   const lang = parseSettings(group.settings).language;
-  const url = `https://t.me/${deps.botUsername}/${deps.env.TELEGRAM_MINIAPP_SHORT_NAME}?startapp=${group.token}`;
+  const url = `https://t.me/${deps.botUsername}?startapp=${group.token}`;
   await sendText(deps.tg, group.chatId, t(lang, textKey), {
     ...opts,
     buttons: [[{ text: t(lang, "settingsButton"), url }]],

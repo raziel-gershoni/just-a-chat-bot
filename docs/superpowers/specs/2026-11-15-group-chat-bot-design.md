@@ -258,7 +258,7 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
 - **No approval state in this bot:** the bakery owns proposals, expiry (7 days), double taps and stale values, so the bot keeps no approvals table, no paused runs, no sweeper for approvals.
 
 ### 6.8 Settings Mini App
-- **Opening it:** when the bot joins (and on `/settings`, which only re-posts the button), it posts a message with a **URL button** to `https://t.me/<bot>/<app>?startapp=<groupToken>`. `groupToken` is a random opaque id (base64url, ≤64 chars) mapped to the group in the DB.
+- **Opening it:** when the bot joins (and on `/settings`, which only re-posts the button), it posts a message with a **URL button** to the bot's Main App, `https://t.me/<bot>?startapp=<groupToken>`. `groupToken` is a random opaque id (base64url, ≤64 chars) mapped to the group in the DB.
 - **Auth:**
   1. Validate `initData` (HMAC with the bot token, `auth_date` ≤ 1 h).
   2. Resolve `start_param` to the group.
@@ -325,14 +325,13 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
   - `TELEGRAM_BOT_TOKEN`
   - `TELEGRAM_WEBHOOK_SECRET`
   - `TELEGRAM_OWNER_ID`
-  - `TELEGRAM_MINIAPP_SHORT_NAME`
   - `ANTHROPIC_API_KEY`
   - `DATABASE_URL`
   - `JWT_SECRET`
   - `BAKERY_URL`, `BAKERY_MCP_KEY` (the owner creates the key in the bakery app and puts it in Railway; never committed)
   - The public URL comes from `RAILWAY_PUBLIC_DOMAIN`.
 - **Manual setup** (step-by-step guide delivered at build time):
-  - BotFather: create the bot, turn privacy off, create the Mini App (`/newapp`, short name `settings`), allow groups.
+  - BotFather: create the bot, turn privacy off, enable the Main App with the Railway domain as its URL, allow groups.
   - Neon project.
   - Railway service linked to the GitHub repo, with a generated domain.
   - Add the bot to the group **as admin**.

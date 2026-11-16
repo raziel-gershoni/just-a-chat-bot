@@ -5,7 +5,6 @@ const valid = {
   TELEGRAM_BOT_TOKEN: "t",
   TELEGRAM_WEBHOOK_SECRET: "s",
   TELEGRAM_OWNER_ID: "123",
-  TELEGRAM_MINIAPP_SHORT_NAME: "settings",
   ANTHROPIC_API_KEY: "k",
   DATABASE_URL: "postgres://x",
   JWT_SECRET: "x".repeat(32),

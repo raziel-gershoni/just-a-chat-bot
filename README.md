@@ -10,7 +10,7 @@ One always-on Next.js 16 server on Railway, Neon Postgres, no queue service. Des
    - `/newbot`, keep the token.
    - `/setprivacy` -> Disable (the bot must see all group messages).
    - `/setjoingroups` -> Enable.
-   - `/newapp` for the Mini App with short name `settings` (URL: `https://<your-railway-domain>`; `/settings` works too).
+   - Bot Settings -> Mini Apps -> **Main App**: enable it with URL `https://<your-railway-domain>`. The group's settings button opens it (`https://t.me/<bot>?startapp=<group token>`). No direct link (`/newapp`) is needed.
 2. **Neon**: create a project and copy the pooled connection string (`DATABASE_URL`).
 3. **Railway**
    - Create a project and a service linked to this GitHub repo (branch `main`), then generate a public domain.
@@ -22,7 +22,6 @@ One always-on Next.js 16 server on Railway, Neon Postgres, no queue service. Des
    | `TELEGRAM_BOT_TOKEN` | from BotFather |
    | `TELEGRAM_WEBHOOK_SECRET` | any random string |
    | `TELEGRAM_OWNER_ID` | your numeric Telegram user id |
-   | `TELEGRAM_MINIAPP_SHORT_NAME` | `settings` |
    | `ANTHROPIC_API_KEY` | Anthropic API key |
    | `DATABASE_URL` | Neon connection string |
    | `JWT_SECRET` | at least 32 random characters |

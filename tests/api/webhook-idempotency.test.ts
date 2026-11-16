@@ -36,7 +36,7 @@ beforeEach(async () => {
   enqueue = vi.fn<(chatId: number, delayMs?: number) => void>();
   const deps: BotDeps = {
     db, tg,
-    env: { TELEGRAM_OWNER_ID: OWNER_ID, TELEGRAM_MINIAPP_SHORT_NAME: "settings" },
+    env: { TELEGRAM_OWNER_ID: OWNER_ID },
     botId: BOT.id, botUsername: "MyBot",
     enqueue, chime: { onHumanMessage: vi.fn() }, onCallback: vi.fn(async () => {}),
     deleteFiles: vi.fn(), now: () => new Date(),

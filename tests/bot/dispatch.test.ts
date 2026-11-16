@@ -37,7 +37,7 @@ beforeEach(async () => {
   enqueue.mockClear(); onHumanMessage.mockClear(); onCallback.mockClear();
   deps = {
     db, tg,
-    env: { TELEGRAM_OWNER_ID: OWNER_ID, TELEGRAM_MINIAPP_SHORT_NAME: "settings" },
+    env: { TELEGRAM_OWNER_ID: OWNER_ID },
     botId: BOT.id, botUsername: "MyBot",
     enqueue, chime: { onHumanMessage }, onCallback,
     deleteFiles: vi.fn(), now: () => new Date(),
@@ -55,7 +55,7 @@ describe("my_chat_member", () => {
     expect(g!.adminHintSent).toBe(true);
     expect(sent()).toHaveLength(2);
     const markup = (sent()[0]!.args[2] as { reply_markup: { inline_keyboard: { url: string }[][] } }).reply_markup;
-    expect(markup.inline_keyboard[0]![0]!.url).toMatch(/^https:\/\/t\.me\/MyBot\/settings\?startapp=[A-Za-z0-9_-]{22}$/);
+    expect(markup.inline_keyboard[0]![0]!.url).toMatch(/^https:\/\/t\.me\/MyBot\?startapp=[A-Za-z0-9_-]{22}$/); // the bot's Main App
     // Removed and re-added: no second hint.
     await handleUpdate(myChatMember(-100, "member", "left", user(10)), deps);
     expect((await getGroup(db, -100))!.active).toBe(false);

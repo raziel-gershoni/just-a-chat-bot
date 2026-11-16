@@ -29,7 +29,6 @@ export default defineRailway((ctx, project) => {
       TELEGRAM_BOT_TOKEN: preserve(),
       TELEGRAM_WEBHOOK_SECRET: preserve(),
       TELEGRAM_OWNER_ID: preserve(),
-      TELEGRAM_MINIAPP_SHORT_NAME: preserve(),
       ANTHROPIC_API_KEY: preserve(),
       DATABASE_URL: preserve(),
       JWT_SECRET: preserve(),

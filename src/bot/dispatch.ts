@@ -17,7 +17,7 @@ import { detectTrigger, isSettingsCommand, reactionTrigger } from "./triggers";
 export type BotDeps = {
   db: Db;
   tg: TgApi;
-  env: Pick<Env, "TELEGRAM_OWNER_ID" | "TELEGRAM_MINIAPP_SHORT_NAME">;
+  env: Pick<Env, "TELEGRAM_OWNER_ID">;
   botId: number;
   botUsername: string;
   enqueue(chatId: number, delayMs?: number): void;
