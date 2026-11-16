@@ -14,8 +14,10 @@ import {
   saveCheckpoint,
 } from "@/src/db/repo/runs";
 
-const trig = { type: "mention", messageId: 1, targetMessageId: 1, requesterId: 1, requesterName: "u" } as const;
-const mk = (db: Awaited<ReturnType<typeof testDb>>, chatId = 1) => createRun(db, { chatId, threadId: null, trigger: trig });
+// Each run gets its own trigger message: one user trigger has at most one run.
+let nextMsg = 1;
+const trig = () => ({ type: "mention", messageId: nextMsg, targetMessageId: nextMsg++, requesterId: 1, requesterName: "u" }) as const;
+const mk = async (db: Awaited<ReturnType<typeof testDb>>, chatId = 1) => (await createRun(db, { chatId, threadId: null, trigger: trig() }))!;
 const t0 = new Date("2026-11-16T10:00:00Z");
 const at = (ms: number) => new Date(t0.getTime() + ms);
 

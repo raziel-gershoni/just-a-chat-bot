@@ -7,6 +7,7 @@ import type { TgApi } from "../telegram/types";
 import { errorText } from "../util/errors";
 import { log } from "../util/log";
 import { deployPing } from "./deploy-ping";
+import type { Inflight } from "./inflight";
 import { installShutdown } from "./shutdown";
 import { startSweeper, sweep } from "./sweeper";
 
@@ -26,6 +27,8 @@ export type StartupDeps = {
   env: Pick<Env, "TELEGRAM_WEBHOOK_SECRET" | "TELEGRAM_OWNER_ID" | "PUBLIC_DOMAIN" | "GIT_SHA" | "GIT_MESSAGE">;
   /** Extra stop functions for shutdown (the chime timers). */
   stops: (() => void)[];
+  /** In-flight webhook handlers; shutdown waits for them. */
+  webhooks?: Pick<Inflight, "idle" | "count">;
   now(): Date;
   startSweeper?: typeof startSweeper;
 };
@@ -67,6 +70,6 @@ export async function startup(deps: StartupDeps, opts: { installShutdown?: typeo
   });
 
   await step("shutdown_hook", async () => {
-    (opts.installShutdown ?? installShutdown)(deps.runner, stops);
+    (opts.installShutdown ?? installShutdown)(deps.runner, stops, deps.webhooks);
   });
 }

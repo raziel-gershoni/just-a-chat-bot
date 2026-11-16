@@ -13,8 +13,9 @@ const DAY = 86_400_000;
 const LEASE = 120_000;
 const T0 = new Date("2026-11-16T10:00:00Z");
 const at = (ms: number) => new Date(T0.getTime() + ms);
-const trig = { type: "mention", messageId: 1, targetMessageId: 1, requesterId: 10, requesterName: "u" } as const;
-const mk = (db: Db, chatId: number) => createRun(db, { chatId, threadId: null, trigger: trig });
+let nextMsg = 1;
+const trig = () => ({ type: "mention", messageId: nextMsg, targetMessageId: nextMsg++, requesterId: 10, requesterName: "u" }) as const;
+const mk = async (db: Db, chatId: number) => (await createRun(db, { chatId, threadId: null, trigger: trig() }))!;
 
 let logSpy: MockInstance;
 beforeEach(() => {

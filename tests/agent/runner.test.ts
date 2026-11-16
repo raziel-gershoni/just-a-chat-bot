@@ -23,8 +23,10 @@ vi.mock("@/src/db/repo/runs", async (importOriginal) => {
 
 const OWNER = "me";
 const LEASE = 120_000;
-const trig = { type: "mention", messageId: 1, targetMessageId: 1, requesterId: 10, requesterName: "u" } as const;
-const mk = (db: Db, chatId: number, threadId: number | null = null) => createRun(db, { chatId, threadId, trigger: trig });
+let nextMsg = 1;
+const trig = () => ({ type: "mention", messageId: nextMsg, targetMessageId: nextMsg++, requesterId: 10, requesterName: "u" }) as const;
+const mk = async (db: Db, chatId: number, threadId: number | null = null) =>
+  (await createRun(db, { chatId, threadId, trigger: trig() }))!;
 
 let logSpy: MockInstance;
 beforeEach(() => {

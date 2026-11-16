@@ -6,12 +6,16 @@ export type RunRow = typeof runs.$inferSelect;
 
 const PENDING = ["queued", "running"] as const;
 
+/**
+ * Create a run. Null when this user trigger (chat, type, message) already has one: the unique
+ * index makes run creation idempotent, so a redelivered update is safe to handle again.
+ */
 export async function createRun(
   db: Db,
   r: { chatId: number; threadId: number | null; trigger: RunTrigger },
-): Promise<RunRow> {
-  const [row] = await db.insert(runs).values(r).returning();
-  return row!;
+): Promise<RunRow | null> {
+  const [row] = await db.insert(runs).values(r).onConflictDoNothing().returning();
+  return row ?? null;
 }
 
 /**

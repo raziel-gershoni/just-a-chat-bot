@@ -40,6 +40,21 @@ function other(label: OtherLabel): MessageMedia {
   return { kind: "other", label };
 }
 
+/**
+ * Pure: the message this one really replies to. In a forum topic Telegram sets
+ * `reply_to_message` to the topic's root on every ordinary message; that is not a reply.
+ */
+export function replyTarget(msg: Message): Message["reply_to_message"] | undefined {
+  const r = msg.reply_to_message;
+  if (r && msg.is_topic_message && r.message_id === msg.message_thread_id) return undefined;
+  return r;
+}
+
+/** Pure: a service message (join, leave, pin, title change...) has no text, caption or media. */
+export function isServiceMessage(row: NewMessage): boolean {
+  return row.text === "" && row.media === null;
+}
+
 /** Pure: a Telegram message as a row for the messages table. */
 export function messageToRow(msg: Message): NewMessage {
   const from = msg.from;
@@ -56,7 +71,7 @@ export function messageToRow(msg: Message): NewMessage {
     date: new Date(msg.date * 1000),
     text: msg.text ?? msg.caption ?? "",
     entities: msg.entities ?? msg.caption_entities ?? null,
-    replyToId: msg.reply_to_message?.message_id ?? null,
+    replyToId: replyTarget(msg)?.message_id ?? null,
     media: mediaOf(msg),
     mediaGroupId: msg.media_group_id ?? null,
   };

@@ -20,6 +20,7 @@ import { getGroup } from "@/src/db/repo/groups";
 import type { MiniDeps } from "@/src/miniapp/service";
 import { getModels } from "@/src/models/catalog";
 import { parseSettings } from "@/src/settings/schema";
+import { createInflight } from "@/src/server/inflight";
 import type { StartupDeps } from "@/src/server/startup";
 import { telegramBot } from "@/src/telegram/client";
 import { errorText } from "@/src/util/errors";
@@ -133,6 +134,7 @@ function build(): ServerDeps {
     return initing;
   };
 
+  const webhooks = createInflight();
   const handle = async (update: Update) => {
     const me = await botInfo();
     await handleUpdate(update, {
@@ -166,8 +168,8 @@ function build(): ServerDeps {
         BAKERY_MCP_KEY: e.BAKERY_MCP_KEY,
       },
     },
-    webhook: { secret: e.TELEGRAM_WEBHOOK_SECRET, db: database, handle },
-    startup: { db: database, tg: bot.api, runner, env: e, stops: [chime.stop], now },
+    webhook: { secret: e.TELEGRAM_WEBHOOK_SECRET, db: database, handle, inflight: webhooks },
+    startup: { db: database, tg: bot.api, runner, env: e, stops: [chime.stop], webhooks, now },
   };
 }
 

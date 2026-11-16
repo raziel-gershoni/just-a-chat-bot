@@ -4,6 +4,7 @@ export const en = {
   welcome:
     "Hi, I'm here. Mention me, reply to one of my messages, or react to a message with my trigger emoji and I'll jump in. I read the whole conversation, so I have the context. Everything else is behind the settings button.",
   settingsButton: "Settings",
+  settingsCommand: "This group's settings are behind the button below.",
   adminHint: "Tip: make me an admin so I can see the whole conversation and react to messages.",
   refusal: "I can't help with that one.",
   cutShort: "(cut short)",

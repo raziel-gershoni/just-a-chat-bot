@@ -1,13 +1,26 @@
 import { randomBytes } from "node:crypto";
+import { GrammyError } from "grammy";
 import type { Chat, User } from "grammy/types";
 import { getGroup, setGroupActive, upsertGroup, type Group } from "../db/repo/groups";
-import { pickLang, t } from "../i18n";
+import { pickLang, t, type MsgKey } from "../i18n";
 import { defaultSettings, parseSettings } from "../settings/schema";
 import { sendText } from "../telegram/send";
 import { errorText } from "../util/errors";
 import { log } from "../util/log";
 import type { BotDeps } from "./dispatch";
 
+/**
+ * Telegram definitely refused a getChatMember (a 400 such as "user not found", or a 403):
+ * the answer is "not a member". A network error, a 429 or a 5xx is transient instead.
+ */
+export function isDefiniteRefusal(err: unknown): boolean {
+  return err instanceof GrammyError && (err.error_code === 400 || err.error_code === 403);
+}
+
+/**
+ * A transient failure (network, 429, 5xx) throws, so the webhook answers 500 and Telegram
+ * redelivers the update later: a Telegram hiccup must not make the bot leave the owner's group.
+ */
 async function ownerIsMember(deps: BotDeps, chatId: number): Promise<boolean> {
   try {
     const m = await deps.tg.getChatMember(chatId, deps.env.TELEGRAM_OWNER_ID);
@@ -16,15 +29,37 @@ async function ownerIsMember(deps: BotDeps, chatId: number): Promise<boolean> {
     log("bot.owner_not_member", { chat_id: chatId, status: m.status });
     return false;
   } catch (err) {
-    // Strangers must not get in: an unanswerable check counts as "not allowed".
+    if (isDefiniteRefusal(err)) {
+      log("bot.owner_not_member", { chat_id: chatId, refused: errorText(err) });
+      return false;
+    }
     log("bot.owner_check_failed", { chat_id: chatId, error: errorText(err) });
-    return false;
+    throw err;
   }
 }
 
 /**
+ * Posts `textKey` with the group's settings button (the Mini App link carrying the group token).
+ * The one place that builds that button: the welcome and the /settings command both use it.
+ */
+export async function postSettingsButton(
+  deps: Pick<BotDeps, "tg" | "botUsername" | "env">,
+  group: Group,
+  textKey: Extract<MsgKey, "welcome" | "settingsCommand">,
+  opts: { replyTo?: number; threadId?: number | null } = {},
+): Promise<void> {
+  const lang = parseSettings(group.settings).language;
+  const url = `https://t.me/${deps.botUsername}/${deps.env.TELEGRAM_MINIAPP_SHORT_NAME}?startapp=${group.token}`;
+  await sendText(deps.tg, group.chatId, t(lang, textKey), {
+    ...opts,
+    buttons: [[{ text: t(lang, "settingsButton"), url }]],
+  });
+}
+
+/**
  * The group row for a chat the bot is in, creating it when the owner is a member. Returns
- * null (after leaving the chat) when the owner is not.
+ * null (after leaving the chat) when the owner is not. An active group returns at once, so a
+ * redelivered join never posts a second welcome.
  */
 export async function ensureGroup(
   deps: BotDeps,
@@ -57,10 +92,6 @@ export async function ensureGroup(
     settings: { ...defaultSettings(pickLang(adder?.language_code)) },
     token: randomBytes(16).toString("base64url"),
   });
-  const lang = parseSettings(group.settings).language;
-  const url = `https://t.me/${deps.botUsername}/${deps.env.TELEGRAM_MINIAPP_SHORT_NAME}?startapp=${group.token}`;
-  await sendText(deps.tg, chat.id, t(lang, "welcome"), {
-    buttons: [[{ text: t(lang, "settingsButton"), url }]],
-  });
+  await postSettingsButton(deps, group, "welcome");
   return group;
 }

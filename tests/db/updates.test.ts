@@ -1,13 +1,13 @@
 import { expect, test } from "vitest";
 import { testDb } from "@/tests/helpers/db";
-import { markUpdate, pruneUpdates, unmarkUpdate } from "@/src/db/repo/updates";
+import { isUpdateSeen, markUpdate, pruneUpdates } from "@/src/db/repo/updates";
 
-test("markUpdate is true once, unmarkUpdate re-arms it", async () => {
+test("markUpdate is true once; isUpdateSeen follows it", async () => {
   const db = await testDb();
+  expect(await isUpdateSeen(db, 5)).toBe(false);
   expect(await markUpdate(db, 5)).toBe(true);
   expect(await markUpdate(db, 5)).toBe(false);
-  await unmarkUpdate(db, 5);
-  expect(await markUpdate(db, 5)).toBe(true);
+  expect(await isUpdateSeen(db, 5)).toBe(true);
 });
 
 test("pruneUpdates removes old rows only", async () => {

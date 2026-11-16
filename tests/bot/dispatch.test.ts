@@ -1,9 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { eq } from "drizzle-orm";
+import { GrammyError } from "grammy";
 import { handleUpdate, type BotDeps } from "@/src/bot/dispatch";
 import { getGroup } from "@/src/db/repo/groups";
 import { getMessage } from "@/src/db/repo/messages";
 import { groups, messages, runs } from "@/src/db/schema";
+import { t } from "@/src/i18n";
 import type { Db } from "@/src/db/types";
 import { testDb } from "../helpers/db";
 import { fakeTg, type FakeTg } from "../helpers/fake-tg";
@@ -19,8 +21,16 @@ const onCallback = vi.fn(async () => {});
 
 const sent = () => tg.calls.filter((c) => c.method === "sendMessage");
 const allRuns = () => db.select().from(runs);
+let logSpy: MockInstance;
+const logged = (event: string) =>
+  logSpy.mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>).filter((l) => l.event === event);
+const tgError = (code: number, description: string) =>
+  new GrammyError("call failed", { ok: false, error_code: code, description }, "getChatMember", {});
+
+afterEach(() => logSpy.mockRestore());
 
 beforeEach(async () => {
+  logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
   db = await testDb();
   tg = fakeTg();
   tg.members.set(OWNER_ID, "member");
@@ -68,11 +78,28 @@ describe("my_chat_member", () => {
     expect(await getGroup(db, -100)).toBeNull();
   });
 
-  it("treats a failing membership check as not allowed", async () => {
-    tg.getChatMember = async () => { throw new Error("boom"); };
+  it("leaves when Telegram definitely refuses the membership check (400 user not found)", async () => {
+    tg.getChatMember = async () => { throw tgError(400, "Bad Request: user not found"); };
     await handleUpdate(myChatMember(-100, "left", "member", user(10)), deps);
     expect(tg.calls.some((c) => c.method === "leaveChat")).toBe(true);
     expect(await getGroup(db, -100)).toBeNull();
+  });
+
+  it("throws on a transient membership-check failure (network, 429, 5xx) instead of leaving", async () => {
+    for (const err of [new Error("socket hang up"), tgError(429, "Too Many Requests"), tgError(502, "Bad Gateway")]) {
+      tg.getChatMember = async () => { throw err; };
+      await expect(handleUpdate(myChatMember(-100, "left", "member", user(10)), deps)).rejects.toBe(err);
+    }
+    expect(tg.calls.some((c) => c.method === "leaveChat")).toBe(false);
+    expect(sent()).toHaveLength(0);
+    expect(await getGroup(db, -100)).toBeNull();
+  });
+
+  it("a redelivered join posts no second welcome", async () => {
+    const u = myChatMember(-100, "left", "administrator", user(10));
+    await handleUpdate(u, deps);
+    await handleUpdate(u, deps);
+    expect(sent()).toHaveLength(1);
   });
 
   it("accepts a restricted owner only while still a member", async () => {
@@ -122,6 +149,55 @@ describe("message", () => {
     await handleUpdate(msgUpdate(groupMsg(-100, 1)), deps);
     expect(tg.calls.some((c) => c.method === "leaveChat")).toBe(true);
     expect(await db.select().from(messages)).toHaveLength(0);
+  });
+
+  it("/settings and /settings@MyBot re-post the settings button in the thread, without a run or a chime ping", async () => {
+    await handleUpdate(msgUpdate(groupMsg(-100, 1)), deps);
+    onHumanMessage.mockClear();
+    const cmd = (id: number, text: string, over: Record<string, unknown> = {}) =>
+      msgUpdate(groupMsg(-100, id, { text, entities: [{ type: "bot_command", offset: 0, length: text.length }], ...over }));
+    await handleUpdate(cmd(2, "/settings"), deps);
+    await handleUpdate(cmd(3, "/Settings@mybot", { is_topic_message: true, message_thread_id: 9 }), deps);
+    const buttons = sent().slice(1);
+    expect(buttons).toHaveLength(2);
+    for (const b of buttons) {
+      expect(b.args[1]).toBe(t("en", "settingsCommand"));
+      const p = b.args[2] as { reply_markup: { inline_keyboard: { text: string; url: string }[][] } };
+      expect(p.reply_markup.inline_keyboard[0]![0]).toEqual({
+        text: t("en", "settingsButton"),
+        url: (sent()[0]!.args[2] as typeof p).reply_markup.inline_keyboard[0]![0]!.url,
+      });
+    }
+    expect((buttons[0]!.args[2] as { reply_parameters: { message_id: number } }).reply_parameters.message_id).toBe(2);
+    expect((buttons[1]!.args[2] as { message_thread_id: number }).message_thread_id).toBe(9);
+    expect(await allRuns()).toHaveLength(0);
+    expect(onHumanMessage).not.toHaveBeenCalled();
+  });
+
+  it("/settings@OtherBot does nothing special", async () => {
+    await handleUpdate(msgUpdate(groupMsg(-100, 1)), deps);
+    const text = "/settings@OtherBot";
+    await handleUpdate(msgUpdate(groupMsg(-100, 2, { text, entities: [{ type: "bot_command", offset: 0, length: text.length }] })), deps);
+    expect(sent()).toHaveLength(1); // only the welcome
+    expect(await allRuns()).toHaveLength(0);
+  });
+
+  it("service messages are not stored and don't ping the chime", async () => {
+    await handleUpdate(msgUpdate(groupMsg(-100, 1)), deps);
+    onHumanMessage.mockClear();
+    await handleUpdate(msgUpdate(groupMsg(-100, 2, { text: undefined, new_chat_members: [user(30)] })), deps);
+    await handleUpdate(msgUpdate(groupMsg(-100, 3, { text: undefined, pinned_message: groupMsg(-100, 1) })), deps);
+    expect(await getMessage(db, -100, 2)).toBeNull();
+    expect(await getMessage(db, -100, 3)).toBeNull();
+    expect(onHumanMessage).not.toHaveBeenCalled();
+    expect(logged("bot.ignored").filter((l) => l.reason === "service_message")).toHaveLength(2);
+  });
+
+  it("in a forum topic, the topic root is not a reply target (no reply run, no reply_to)", async () => {
+    const root = groupMsg(-100, 9, { from: BOT });
+    await handleUpdate(msgUpdate(groupMsg(-100, 10, { is_topic_message: true, message_thread_id: 9, reply_to_message: root })), deps);
+    expect((await getMessage(db, -100, 10))!.replyToId).toBeNull();
+    expect(await allRuns()).toHaveLength(0);
   });
 
   it("a duplicate delivery gives one row and one run", async () => {
@@ -202,6 +278,12 @@ describe("edited_message", () => {
     expect(await allRuns()).toHaveLength(0);
     expect(enqueue).not.toHaveBeenCalled();
   });
+
+  it("logs an edit of a message it never stored", async () => {
+    await handleUpdate(msgUpdate(groupMsg(-100, 1)), deps);
+    await handleUpdate({ update_id: 501, edited_message: groupMsg(-100, 77, { text: "x" }) } as never, deps);
+    expect(logged("bot.ignored").filter((l) => l.reason === "edit_unknown_message")).toHaveLength(1);
+  });
 });
 
 describe("message_reaction", () => {
@@ -235,5 +317,11 @@ describe("callback_query", () => {
     const q = { id: "1", from: user(1), chat_instance: "x", data: "d" };
     await handleUpdate({ update_id: 1, callback_query: q } as never, deps);
     expect(onCallback).toHaveBeenCalledWith(q);
+  });
+  it("a redelivered callback is handed over again without crashing (the bakery owns idempotency)", async () => {
+    const u = { update_id: 2, callback_query: { id: "2", from: user(1), chat_instance: "x", data: "mcp:approve:1" } } as never;
+    await handleUpdate(u, deps);
+    await handleUpdate(u, deps);
+    expect(onCallback).toHaveBeenCalledTimes(2);
   });
 });

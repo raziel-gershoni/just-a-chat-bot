@@ -4,6 +4,7 @@ import {
   bigserial,
   boolean,
   index,
+  uniqueIndex,
   integer,
   jsonb,
   pgTable,
@@ -90,7 +91,6 @@ export const messages = pgTable(
     media: jsonb("media").$type<MessageMedia>(),
     mediaGroupId: text("media_group_id"),
     anthropicFileId: text("anthropic_file_id"),
-    reactionRunDone: boolean("reaction_run_done").notNull().default(false),
   },
   (t) => [
     primaryKey({ columns: [t.chatId, t.messageId] }),
@@ -119,7 +119,15 @@ export const runs = pgTable(
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
-  (t) => [index("runs_chat_status_id_idx").on(t.chatId, t.status, t.id)],
+  (t) => [
+    index("runs_chat_status_id_idx").on(t.chatId, t.status, t.id),
+    // One run per user trigger (a mention, a reply, or the first trigger-emoji reaction on a
+    // message), so a redelivered or re-handled update never creates a second run. Chime runs
+    // are not user triggers and are not covered.
+    uniqueIndex("runs_user_trigger_uq")
+      .on(t.chatId, sql`(${t.trigger}->>'type')`, sql`(${t.trigger}->>'messageId')`)
+      .where(sql`${t.trigger}->>'type' <> 'chime'`),
+  ],
 );
 
 export const processedUpdates = pgTable("processed_updates", {

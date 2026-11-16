@@ -106,10 +106,10 @@ describe("forgetHistory", () => {
     await insertMessage(deps.db, msg(-100, 2));
     await setAnthropicFileId(deps.db, -100, 2, "file_x");
     const trig = { type: "mention" as const, messageId: 2, targetMessageId: 2, requesterId: 1, requesterName: "a" };
-    const done = await createRun(deps.db, { chatId: -100, threadId: null, trigger: trig });
+    const done = (await createRun(deps.db, { chatId: -100, threadId: null, trigger: trig }))!;
     await claimNextRun(deps.db, -100, "o", 1000, NOW);
     await finishRun(deps.db, done.id, "o", "done");
-    const running = await createRun(deps.db, { chatId: -100, threadId: null, trigger: trig });
+    const running = (await createRun(deps.db, { chatId: -100, threadId: null, trigger: { ...trig, type: "reply" } }))!;
     await claimNextRun(deps.db, -100, "o", 120_000, NOW);
 
     await forgetHistory(deps, member);

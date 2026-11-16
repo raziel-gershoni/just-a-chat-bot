@@ -4,7 +4,6 @@ import { testDb } from "@/tests/helpers/db";
 import { msg, seedGroup } from "@/tests/helpers/db-fixtures";
 import * as schema from "@/src/db/schema";
 import {
-  claimReactionRun,
   deleteChatMessages,
   getMessage,
   insertMessage,
@@ -67,25 +66,24 @@ test("window filters by thread and after", async () => {
   const t = await win(db, { threadId: 7 });
   expect(t.length).toBe(15);
   expect(t.every((m) => m.threadId === 7)).toBe(true);
-  const after = await win(db, { after: new Date(Date.UTC(2026, 0, 1, 0, 0, 25)) });
-  expect(after.map((m) => m.seq)).toEqual([26, 27, 28, 29, 30]);
+  // A null thread (a forum's General) reads only General, not every topic.
+  const general = await win(db);
+  expect(general.length).toBe(15);
+  expect(general.every((m) => m.threadId === null)).toBe(true);
+  const after = await win(db, { threadId: 7, after: new Date(Date.UTC(2026, 0, 1, 0, 0, 25)) });
+  expect(after.map((m) => m.seq)).toEqual([26, 28, 30]);
 });
 
 test("recentMessages, lastBotMessageAt, getMessage, updateMessageText", async () => {
   const db = await fill(5, (i) => ({ isBot: i === 3 }));
   expect((await recentMessages(db, 1, 2)).map((m) => m.messageId)).toEqual([4, 5]);
   expect((await lastBotMessageAt(db, 1))?.toISOString()).toBe(new Date(Date.UTC(2026, 0, 1, 0, 0, 3)).toISOString());
-  await updateMessageText(db, 1, 2, "edited", [{ type: "bold" }]);
+  expect(await updateMessageText(db, 1, 2, "edited", [{ type: "bold" }])).toBe(true);
+  expect(await updateMessageText(db, 1, 99, "nope", null)).toBe(false);
   const m = await getMessage(db, 1, 2);
   expect(m?.text).toBe("edited");
   expect(m?.entities).toEqual([{ type: "bold" }]);
   expect(await getMessage(db, 1, 99)).toBeNull();
-});
-
-test("claimReactionRun succeeds once", async () => {
-  const db = await fill(1);
-  expect(await claimReactionRun(db, 1, 1)).toBe(true);
-  expect(await claimReactionRun(db, 1, 1)).toBe(false);
 });
 
 test("deleteChatMessages returns file ids and empties the chat", async () => {

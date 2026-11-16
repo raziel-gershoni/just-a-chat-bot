@@ -6,7 +6,7 @@ function row(id: number, over: Partial<StoredMessage> = {}): StoredMessage {
   return {
     chatId: 1, messageId: id, seq: id, threadId: null, fromId: 10, fromName: "A", isBot: false,
     date: new Date("2026-07-01T09:05:00Z"), text: `t${id}`, entities: null, replyToId: null,
-    media: null, mediaGroupId: null, anthropicFileId: null, reactionRunDone: false, ...over,
+    media: null, mediaGroupId: null, anthropicFileId: null, ...over,
   };
 }
 const opts = { attach: new Map(), noNewer: "nothing new" };

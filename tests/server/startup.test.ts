@@ -76,13 +76,8 @@ describe("startup", () => {
 });
 
 describe("installShutdown", () => {
-  it("on SIGTERM stops accepting, stops timers, drains, then exits 0", async () => {
-    const { runner, stopped } = await setup();
+  function capture() {
     const order: string[] = [];
-    runner.stopAccepting.mockImplementation(() => order.push("stopAccepting"));
-    runner.drain.mockImplementation(async () => {
-      order.push("drain");
-    });
     const exit = vi.spyOn(process, "exit").mockImplementation((() => {
       order.push("exit");
     }) as never);
@@ -91,13 +86,38 @@ describe("installShutdown", () => {
       handlers[sig] = fn;
       return process;
     }) as never);
+    return { order, exit, handlers };
+  }
 
-    installShutdown(runner, [() => order.push("stopSweeper"), () => stopped.push("chime")]);
+  it("on SIGTERM stops accepting, stops timers, waits for webhooks, drains, then exits 0", async () => {
+    const { runner, stopped } = await setup();
+    const { order, exit, handlers } = capture();
+    runner.stopAccepting.mockImplementation(() => order.push("stopAccepting"));
+    runner.drain.mockImplementation(async () => {
+      order.push("drain");
+    });
+    const webhooks = { count: () => 1, idle: async () => { order.push("webhooks_idle"); } };
+
+    installShutdown(runner, [() => order.push("stopSweeper"), () => stopped.push("chime")], webhooks);
     expect(Object.keys(handlers).sort()).toEqual(["SIGINT", "SIGTERM"]);
     handlers.SIGTERM!();
     await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
-    expect(order).toEqual(["stopAccepting", "stopSweeper", "drain", "exit"]);
+    expect(order).toEqual(["stopAccepting", "stopSweeper", "webhooks_idle", "drain", "exit"]);
     expect(stopped).toEqual(["chime"]);
     expect(events()).toContain("shutdown.done");
+  });
+
+  it("a throwing stop is logged and the other stops and the drain still run", async () => {
+    const { runner } = await setup();
+    const { order, exit, handlers } = capture();
+    runner.stopAccepting.mockImplementation(() => { throw new Error("nope"); });
+    runner.drain.mockImplementation(async () => {
+      order.push("drain");
+    });
+    installShutdown(runner, [() => { throw new Error("timer boom"); }, () => order.push("chime")]);
+    handlers.SIGTERM!();
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+    expect(order).toEqual(["chime", "drain", "exit"]);
+    expect(events().filter((e) => e === "shutdown.step_failed")).toHaveLength(2);
   });
 });

@@ -14,13 +14,13 @@ describe("createChimeRun", () => {
     const db = await testDb();
     await seedGroup(db, 1);
     await insertMessage(db, msg(1, 5, { threadId: 7 }));
-    expect((await createChimeRun(db, 1, trig(5))).threadId).toBe(7);
+    expect((await createChimeRun(db, 1, trig(5)))!.threadId).toBe(7);
   });
 
   it("uses a null thread for a General / non-forum message", async () => {
     const db = await testDb();
     await seedGroup(db, 1);
     await insertMessage(db, msg(1, 6));
-    expect((await createChimeRun(db, 1, trig(6))).threadId).toBeNull();
+    expect((await createChimeRun(db, 1, trig(6)))!.threadId).toBeNull();
   });
 });

@@ -1,9 +1,9 @@
-import { and, asc, desc, eq, gt, gte, lte, max, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, isNull, lte, max, sql } from "drizzle-orm";
 import { groups, messages } from "../schema";
 import type { Db } from "../types";
 
 export type StoredMessage = typeof messages.$inferSelect;
-export type NewMessage = Omit<typeof messages.$inferInsert, "seq" | "anthropicFileId" | "reactionRunDone">;
+export type NewMessage = Omit<typeof messages.$inferInsert, "seq" | "anthropicFileId">;
 
 /** Max messages kept per group (2 x the largest history window). */
 export const RETENTION = 800;
@@ -51,11 +51,13 @@ export async function updateMessageText(
   messageId: number,
   text: string,
   entities: unknown[] | null,
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const rows = await db
     .update(messages)
     .set({ text, entities })
-    .where(and(eq(messages.chatId, chatId), eq(messages.messageId, messageId)));
+    .where(and(eq(messages.chatId, chatId), eq(messages.messageId, messageId)))
+    .returning({ id: messages.messageId });
+  return rows.length > 0;
 }
 
 export async function getMessage(db: Db, chatId: number, messageId: number): Promise<StoredMessage | null> {
@@ -66,7 +68,10 @@ export async function getMessage(db: Db, chatId: number, messageId: number): Pro
   return row ?? null;
 }
 
-/** Ascending history for the prompt; the start seq is fixed for 20 messages at a time. */
+/**
+ * Ascending history for the prompt; the start seq is fixed for 20 messages at a time. Only the
+ * run's thread: a null thread is a non-forum chat (every row is null there) or a forum's General.
+ */
 export async function windowMessages(
   db: Db,
   p: { chatId: number; threadId: number | null; window: number; after: Date | null },
@@ -82,7 +87,7 @@ export async function windowMessages(
       and(
         eq(messages.chatId, p.chatId),
         gte(messages.seq, startSeq),
-        p.threadId != null ? eq(messages.threadId, p.threadId) : undefined,
+        p.threadId != null ? eq(messages.threadId, p.threadId) : isNull(messages.threadId),
         p.after ? gt(messages.date, p.after) : undefined,
       ),
     )
@@ -113,16 +118,6 @@ export async function setAnthropicFileId(db: Db, chatId: number, messageId: numb
     .update(messages)
     .set({ anthropicFileId: fileId })
     .where(and(eq(messages.chatId, chatId), eq(messages.messageId, messageId)));
-}
-
-/** True for exactly one caller per message: a reaction may start only one run. */
-export async function claimReactionRun(db: Db, chatId: number, messageId: number): Promise<boolean> {
-  const rows = await db
-    .update(messages)
-    .set({ reactionRunDone: true })
-    .where(and(eq(messages.chatId, chatId), eq(messages.messageId, messageId), eq(messages.reactionRunDone, false)))
-    .returning({ id: messages.messageId });
-  return rows.length > 0;
 }
 
 /** Delete every stored message of a chat; returns the uploaded file ids to clean up. */

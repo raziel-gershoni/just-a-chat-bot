@@ -1,7 +1,7 @@
 import type { CallbackQuery, ChatMemberUpdated, Message, MessageReactionUpdated, Update } from "grammy/types";
 import type { Env } from "../config/env";
 import { getGroup, markAdminHintSent, migrateChat, setGroupActive } from "../db/repo/groups";
-import { claimReactionRun, getMessage, insertMessage, updateMessageText } from "../db/repo/messages";
+import { getMessage, insertMessage, updateMessageText } from "../db/repo/messages";
 import { createRun } from "../db/repo/runs";
 import type { Db } from "../db/types";
 import { t } from "../i18n";
@@ -9,10 +9,10 @@ import { parseSettings } from "../settings/schema";
 import { sendText } from "../telegram/send";
 import type { TgApi } from "../telegram/types";
 import { log } from "../util/log";
-import { ensureGroup } from "./access";
-import { messageToRow } from "./ingest";
+import { ensureGroup, postSettingsButton } from "./access";
+import { isServiceMessage, messageToRow } from "./ingest";
 import { handlePrivateMessage } from "./private";
-import { detectTrigger, reactionTrigger } from "./triggers";
+import { detectTrigger, isSettingsCommand, reactionTrigger } from "./triggers";
 
 export type BotDeps = {
   db: Db;
@@ -34,7 +34,11 @@ const ignored = (reason: string, fields: Record<string, unknown> = {}) => log("b
 const fullName = (u: { first_name: string; last_name?: string }) =>
   [u.first_name, u.last_name].filter(Boolean).join(" ");
 
-/** Routes one update. Throws on DB failure so the webhook route can answer 500 and Telegram retries. */
+/**
+ * Routes one update. Throws on DB failure so the webhook route can answer 500 and Telegram
+ * retries. Handling is idempotent: an update handled again (a redelivery after a partial
+ * failure) stores nothing twice and creates no second run (runs are unique per user trigger).
+ */
 export async function handleUpdate(update: Update, deps: BotDeps): Promise<void> {
   if (update.my_chat_member) return onMyChatMember(update.my_chat_member, deps);
   if (update.chat_member) return onChatMember(update.chat_member, deps);
@@ -93,15 +97,27 @@ async function onMessage(msg: Message, deps: BotDeps): Promise<void> {
 
   const group = await ensureGroup(deps, chat, msg.from);
   if (!group) return;
-  const stored = await insertMessage(deps.db, messageToRow(msg));
-  if (!stored) return ignored("duplicate_message", { chat_id: chat.id, message_id: msg.message_id });
-  if (stored.pruned.length) deps.deleteFiles(stored.pruned);
+  const row = messageToRow(msg);
+  const threadId = row.threadId ?? null;
+  if (isSettingsCommand(msg, deps.botUsername)) {
+    log("bot.settings_command", { chat_id: chat.id, from_id: msg.from?.id ?? null });
+    await postSettingsButton(deps, group, "settingsCommand", { replyTo: msg.message_id, threadId });
+    return;
+  }
+  if (isServiceMessage(row)) return ignored("service_message", { chat_id: chat.id, message_id: msg.message_id });
+
+  // A row that already exists is a redelivery: trigger detection still runs (the first
+  // delivery may have failed before creating the run); only the file cleanup and the chime
+  // ping, which the first delivery already did, are skipped.
+  const stored = await insertMessage(deps.db, row);
+  if (stored?.pruned.length) deps.deleteFiles(stored.pruned);
+  if (!stored) log("bot.message_exists", { chat_id: chat.id, message_id: msg.message_id });
 
   const trigger = detectTrigger(msg, deps);
   if (trigger) {
-    await createRun(deps.db, {
+    const run = await createRun(deps.db, {
       chatId: chat.id,
-      threadId: stored.threadId,
+      threadId,
       trigger: {
         type: trigger,
         messageId: msg.message_id,
@@ -110,22 +126,25 @@ async function onMessage(msg: Message, deps: BotDeps): Promise<void> {
         requesterName: msg.from ? fullName(msg.from) : null,
       },
     });
+    if (!run) return ignored("run_exists", { chat_id: chat.id, message_id: msg.message_id, trigger });
     deps.enqueue(chat.id, msg.media_group_id ? ALBUM_WAIT_MS : 0);
     return;
   }
+  if (!stored) return ignored("duplicate_message", { chat_id: chat.id, message_id: msg.message_id });
   if (parseSettings(group.settings).chime.enabled) deps.chime.onHumanMessage(chat.id);
   else ignored("no_trigger_chime_off", { chat_id: chat.id });
 }
 
 async function onEdited(msg: Message, deps: BotDeps): Promise<void> {
   if (!isGroupChat(msg.chat.type)) return ignored("edit_not_group", { chat_id: msg.chat.id });
-  await updateMessageText(
+  const updated = await updateMessageText(
     deps.db,
     msg.chat.id,
     msg.message_id,
     msg.text ?? msg.caption ?? "",
     msg.entities ?? msg.caption_entities ?? null,
   );
+  if (!updated) ignored("edit_unknown_message", { chat_id: msg.chat.id, message_id: msg.message_id });
 }
 
 async function onReaction(r: MessageReactionUpdated, deps: BotDeps): Promise<void> {
@@ -139,10 +158,8 @@ async function onReaction(r: MessageReactionUpdated, deps: BotDeps): Promise<voi
   if (!stored) {
     return ignored("reaction_message_unknown", { chat_id: chatId, message_id: r.message_id });
   }
-  if (!(await claimReactionRun(deps.db, chatId, r.message_id))) {
-    return ignored("reaction_already_ran", { chat_id: chatId, message_id: r.message_id });
-  }
-  await createRun(deps.db, {
+  // One run per reacted-to message: a second reaction, or a redelivery, finds the run there.
+  const run = await createRun(deps.db, {
     chatId,
     threadId: stored.threadId,
     trigger: {
@@ -154,5 +171,6 @@ async function onReaction(r: MessageReactionUpdated, deps: BotDeps): Promise<voi
       emoji: parseSettings(group.settings).triggerEmoji,
     },
   });
+  if (!run) return ignored("reaction_already_ran", { chat_id: chatId, message_id: r.message_id });
   deps.enqueue(chatId);
 }

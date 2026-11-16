@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX "runs_user_trigger_uq" ON "runs" USING btree ("chat_id",("trigger"->>'type'),("trigger"->>'messageId')) WHERE "runs"."trigger"->>'type' <> 'chime';--> statement-breakpoint
+ALTER TABLE "messages" DROP COLUMN "reaction_run_done";
