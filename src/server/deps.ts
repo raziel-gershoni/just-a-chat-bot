@@ -51,7 +51,9 @@ function build(): ServerDeps {
   const bot = telegramBot(e.TELEGRAM_BOT_TOKEN);
   const llm = anthropicLlm(e.ANTHROPIC_API_KEY);
   const now = () => new Date();
-  const owner = process.env.RAILWAY_DEPLOYMENT_ID ?? randomUUID();
+  // Unique per process: replicas of one deployment, and a crash-restarted process, never share it.
+  const owner = `${e.DEPLOYMENT_ID ?? "local"}:${randomUUID()}`;
+  log("server.lease_owner", { owner });
 
   const lang = async (chatId: number) => {
     const group = await getGroup(database, chatId);
@@ -65,7 +67,7 @@ function build(): ServerDeps {
     }
   };
 
-  // botInfo is declared below; the runner only calls it from inside process().
+  // botInfo is declared below; processRun resolves it inside its own error handling.
   const runner: Runner = createRunner({
     db: database,
     tg: bot.api,
@@ -75,7 +77,6 @@ function build(): ServerDeps {
     typingMs: TYPING_MS,
     now,
     process: async (run) => {
-      const me = await botInfo();
       // Read from env at call time and never stored.
       const cfg = bakeryConfig({ BAKERY_URL: e.BAKERY_URL, BAKERY_MCP_KEY: e.BAKERY_MCP_KEY });
       await processRun(run, {
@@ -89,7 +90,7 @@ function build(): ServerDeps {
         token: e.TELEGRAM_BOT_TOKEN,
         fetch,
         models: () => getModels({ db: database, llm, now }),
-        botName: me.username,
+        botName: async () => (await botInfo()).username,
         deleteFiles,
       });
     },

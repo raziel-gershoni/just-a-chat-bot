@@ -3,7 +3,7 @@
 // keeps the lease alive and the typing indicator on while `process` works, then claims the next.
 // A run released for a retry is held back in the DB for attempts*30 s and re-enqueued then.
 // Loops that die are not restarted here: the sweeper finds their runs once the lease expires.
-import { claimNextRun, deferRetry, renewLease, type RunRow } from "../db/repo/runs";
+import { claimNextRun, deferRetry, releaseUnstarted, renewLease, type RunRow } from "../db/repo/runs";
 import type { Db } from "../db/types";
 import type { TgApi } from "../telegram/types";
 import { errorText } from "../util/errors";
@@ -80,6 +80,13 @@ export function createRunner(deps: RunnerDeps): Runner {
           if (state.again) continue;
           break;
         }
+        if (stopped) {
+          // Shutdown began while the claim was in flight: give the run back untouched; the next
+          // instance's sweep picks it up.
+          await releaseUnstarted(db, run.id, owner);
+          log("runner.released_on_stop", { chat_id: chatId, run_id: run.id });
+          break;
+        }
         log("runner.claimed", {
           chat_id: chatId,
           run_id: run.id,
@@ -109,6 +116,7 @@ export function createRunner(deps: RunnerDeps): Runner {
   }
 
   // Lease heartbeat and typing indicator for one run; returns the function that stops both.
+  // A chime run shows no typing: it often ends silent, and nobody is waiting for it.
   function keepAlive(run: RunRow): () => void {
     const ids = { chat_id: run.chatId, run_id: run.id };
     const heartbeat = every(() => {
@@ -125,11 +133,10 @@ export function createRunner(deps: RunnerDeps): Runner {
         log("runner.typing_failed", { ...ids, error: errorText(err) });
       });
     };
-    typing();
-    const typer = every(typing, deps.typingMs);
+    const typer = run.trigger.type === "chime" ? null : (typing(), every(typing, deps.typingMs));
     return () => {
       stopEvery(heartbeat);
-      stopEvery(typer);
+      if (typer) stopEvery(typer);
     };
   }
 

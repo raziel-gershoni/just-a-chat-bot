@@ -11,6 +11,7 @@ export const ru: Record<MsgKey, string> = {
   refusal: "С этим я помочь не могу.",
   cutShort: "(ответ обрезан)",
   runFailed: "Что-то пошло не так, и я не смог ответить. Попробуйте ещё раз.",
+  noAnswer: "В этот раз не получилось сформулировать ответ. Спросите ещё раз.",
   sourcesLabel: "Источники",
   bakeryApprove: "Подтвердить",
   bakeryReject: "Отмена",

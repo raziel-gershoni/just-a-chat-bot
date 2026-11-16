@@ -7,7 +7,6 @@ import {
   createRun,
   finishRun,
   releaseLease,
-  saveCheckpoint,
   type RunRow,
 } from "@/src/db/repo/runs";
 import { runs } from "@/src/db/schema";
@@ -187,6 +186,27 @@ describe("per-chat loop", () => {
     expect(logged("runner.enqueue_ignored")).toEqual([expect.objectContaining({ chat_id: 2 })]);
   });
 
+  it("a run claimed while shutdown begins is given back untouched, its attempt undone", async () => {
+    const db = await testDb();
+    const a = await mk(db, 1);
+    const process = vi.fn(async () => {});
+    let r!: Runner;
+    const real = (await vi.importActual<typeof import("@/src/db/repo/runs")>("@/src/db/repo/runs")).claimNextRun;
+    vi.mocked(claimNextRun).mockImplementationOnce(async (...args) => {
+      const got = await real(...args);
+      r.stopAccepting(); // SIGTERM lands while the claim is in flight
+      return got;
+    });
+    r = runner(db, fakeTg(), process);
+    r.enqueue(1);
+    await r.drain();
+    expect(process).not.toHaveBeenCalled();
+    const [row] = await db.select().from(runs).where(eq(runs.id, a.id));
+    expect([row!.leaseOwner, row!.leaseUntil, row!.attempts]).toEqual([null, null, 0]);
+    expect(await chatsWithPendingRuns(db, new Date())).toEqual([1]);
+    expect(logged("runner.released_on_stop")).toEqual([expect.objectContaining({ chat_id: 1, run_id: a.id })]);
+  });
+
   it("logs a loop error, ends the loop and leaves the run for the sweeper", async () => {
     const db = await testDb();
     await mk(db, 1);
@@ -222,6 +242,23 @@ describe("typing and lease heartbeat", () => {
     for (const c of typing) expect(c.args).toEqual([run.chatId, "typing", { message_thread_id: 7 }]);
     await vi.advanceTimersByTimeAsync(20_000);
     expect(tg.calls.filter((c) => c.method === "sendChatAction")).toHaveLength(typing.length);
+  });
+
+  it("shows no typing for a chime run", async () => {
+    const db = await testDb();
+    const run = (await createRun(db, {
+      chatId: 1, threadId: null,
+      trigger: { type: "chime", messageId: 1, targetMessageId: 1, requesterId: null, requesterName: null },
+    }))!;
+    const tg = fakeTg();
+    const p = gated(db);
+    const r = runner(db, tg, p.process);
+    r.enqueue(1);
+    await p.started(1);
+    await settle();
+    p.release(run.id);
+    await r.drain();
+    expect(tg.calls.filter((c) => c.method === "sendChatAction")).toHaveLength(0);
   });
 
   it("logs a failed typing action and still finishes the run", async () => {
@@ -301,8 +338,7 @@ describe("retry after a released lease", () => {
     const r = runner(db, fakeTg(), async (row) => {
       seen.push(row.id);
       if (seen.length === 1) {
-        // What processRun does on a retryable error: count the attempt, release the lease.
-        await saveCheckpoint(db, row.id, OWNER, { attempts: 1 });
+        // What processRun does on a retryable error: release the lease (the claim counted the attempt).
         await releaseLease(db, row.id, OWNER);
         return;
       }

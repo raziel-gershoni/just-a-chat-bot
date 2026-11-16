@@ -31,7 +31,9 @@ describe("loadEnv", () => {
       RAILWAY_PUBLIC_DOMAIN: "x.up.railway.app",
       RAILWAY_GIT_COMMIT_SHA: "abc",
       RAILWAY_GIT_COMMIT_MESSAGE: "msg",
+      RAILWAY_DEPLOYMENT_ID: "dep-1",
     });
+    expect(e.DEPLOYMENT_ID).toBe("dep-1");
     expect(e.PUBLIC_DOMAIN).toBe("x.up.railway.app");
     expect(e.GIT_SHA).toBe("abc");
     expect(e.GIT_MESSAGE).toBe("msg");

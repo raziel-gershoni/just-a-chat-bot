@@ -21,7 +21,9 @@ export async function createRun(
 /**
  * Lease the OLDEST pending run of the chat, only if its lease is free or expired. A head run
  * leased by someone else blocks the chat (later runs are never skipped to), so per-chat order
- * holds across two instances. The head pick and the lease check are one statement.
+ * holds across two instances. The head pick and the lease check are one statement. Each claim
+ * counts one attempt in the same statement, so a run that keeps killing its process still
+ * runs out of attempts.
  */
 export async function claimNextRun(
   db: Db,
@@ -42,6 +44,7 @@ export async function claimNextRun(
       status: "running",
       leaseOwner: owner,
       leaseUntil: new Date(now.getTime() + leaseMs),
+      attempts: sql`${runs.attempts} + 1`,
       updatedAt: now,
     })
     .where(and(inArray(runs.id, head), or(isNull(runs.leaseUntil), lte(runs.leaseUntil, now))))
@@ -100,6 +103,14 @@ export async function releaseLease(db: Db, runId: number, owner: string): Promis
     .where(and(eq(runs.id, runId), eq(runs.leaseOwner, owner)));
 }
 
+/** Give back a run claimed but never started (shutdown began): the claim's attempt is undone. */
+export async function releaseUnstarted(db: Db, runId: number, owner: string): Promise<void> {
+  await db
+    .update(runs)
+    .set({ leaseOwner: null, leaseUntil: null, attempts: sql`greatest(${runs.attempts} - 1, 0)`, updatedAt: new Date() })
+    .where(and(eq(runs.id, runId), eq(runs.leaseOwner, owner)));
+}
+
 /**
  * A run released for a retry (pending, no owner) stays unclaimable for attempts*stepMs, so
  * neither a new trigger nor any instance's sweeper retries it before its backoff. Null when the
@@ -145,6 +156,16 @@ export async function hasActiveRun(db: Db, chatId: number, now: Date): Promise<b
         or(eq(runs.status, "queued"), and(eq(runs.status, "running"), gt(runs.leaseUntil, now))),
       ),
     )
+    .limit(1);
+  return rows.length > 0;
+}
+
+/** A user-trigger (non-chime) run was created in the chat after `since`. */
+export async function hasUserRunSince(db: Db, chatId: number, since: Date): Promise<boolean> {
+  const rows = await db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(and(eq(runs.chatId, chatId), gt(runs.createdAt, since), sql`${runs.trigger}->>'type' <> 'chime'`))
     .limit(1);
   return rows.length > 0;
 }

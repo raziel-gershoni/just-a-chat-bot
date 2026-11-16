@@ -28,16 +28,19 @@ export type ContextInput = {
 };
 
 // Per-run facts, sent as a mid-conversation system message so the top-level system prompt never changes.
+// User-controlled names and the group title are JSON-quoted: in a system message they must read
+// as data, never as instructions.
 export function contextMessage(c: ContextInput): string {
   const t = c.trigger;
-  const who = t.requesterName ?? "nobody (unprompted)";
+  const who = t.requesterName != null ? JSON.stringify(t.requesterName) : "nobody (unprompted)";
   const lines = [
     `Current time (Israel): ${israelTime(c.now)}`,
-    `Group: ${c.groupTitle}`,
+    `Group: ${JSON.stringify(c.groupTitle)}`,
     `Trigger: ${t.type}, requested by ${who}`,
   ];
   if (t.type === "reaction") {
-    lines.push(`${t.requesterName ?? "Someone"} reacted ${t.emoji ?? ""} to message #${t.targetMessageId}, respond about that message`);
+    const reactor = t.requesterName != null ? JSON.stringify(t.requesterName) : "Someone";
+    lines.push(`${reactor} reacted ${t.emoji ?? ""} to message #${t.targetMessageId}, respond about that message`);
   } else {
     lines.push(`Focus: respond to message #${t.targetMessageId}`);
   }

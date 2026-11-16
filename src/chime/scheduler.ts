@@ -33,19 +33,39 @@ export function createChimeScheduler(deps: ChimeSchedulerDeps): { onHumanMessage
   const clearT = deps.clearTimeout ?? clearTimeout;
   const bakeryConfigured = deps.bakeryConfigured ?? (() => bakeryConfig({ BAKERY_URL: process.env.BAKERY_URL, BAKERY_MCP_KEY: process.env.BAKERY_MCP_KEY }) !== null);
   const timers = new Map<number, ReturnType<typeof setTimeout>>();
+  // Chats whose fire() is still running (the classifier takes seconds): one at a time per chat.
+  const firing = new Set<number>();
 
   const skip = (chatId: number, reason: string) => log("chime.skip", { chatId, reason });
 
+  // Null when a chime may go ahead now, else why not. Checked before the classifier and again
+  // right before the run is created, since a mention can be answered while the classifier works.
+  async function blocked(chatId: number): Promise<string | null> {
+    const now = deps.now();
+    if (await hasActiveRun(deps.db, chatId, now)) return "active_run";
+    const lastBot = await lastBotMessageAt(deps.db, chatId);
+    if (lastBot && now.getTime() - lastBot.getTime() < cooldownMs) return "cooldown";
+    return null;
+  }
+
   async function fire(chatId: number): Promise<void> {
+    if (firing.has(chatId)) return skip(chatId, "in_flight");
+    firing.add(chatId);
+    try {
+      await decide(chatId);
+    } finally {
+      firing.delete(chatId);
+    }
+  }
+
+  async function decide(chatId: number): Promise<void> {
     const { db } = deps;
     const group = await getGroup(db, chatId);
     if (!group || !group.active) return skip(chatId, "inactive");
     const settings = parseSettings(group.settings);
     if (!settings.chime.enabled) return skip(chatId, "chime_off");
-    const now = deps.now();
-    if (await hasActiveRun(db, chatId, now)) return skip(chatId, "active_run");
-    const lastBot = await lastBotMessageAt(db, chatId);
-    if (lastBot && now.getTime() - lastBot.getTime() < cooldownMs) return skip(chatId, "cooldown");
+    const before = await blocked(chatId);
+    if (before) return skip(chatId, before);
 
     const recent = await recentMessages(db, chatId, CHIME_INPUT_MESSAGES);
     const latest = recent[recent.length - 1];
@@ -62,6 +82,8 @@ export function createChimeScheduler(deps: ChimeSchedulerDeps): { onHumanMessage
     if (!d) return skip(chatId, "classifier_failed");
     log("chime.decision", { chatId, chime: d.chime, reason: d.reason });
     if (!d.chime) return;
+    const after = await blocked(chatId);
+    if (after) return skip(chatId, `${after}_after_classify`);
     await deps.enqueueRun(chatId, {
       type: "chime",
       messageId: last.messageId,

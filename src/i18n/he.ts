@@ -11,6 +11,7 @@ export const he: Record<MsgKey, string> = {
   refusal: "עם זה אני לא יכול לעזור.",
   cutShort: "(התשובה נקטעה)",
   runFailed: "משהו השתבש ולא הצלחתי לענות. אפשר לנסות שוב?",
+  noAnswer: "לא הצלחתי לנסח תשובה הפעם. נסו לשאול שוב.",
   sourcesLabel: "מקורות",
   bakeryApprove: "אשר",
   bakeryReject: "בטל",

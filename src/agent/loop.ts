@@ -11,14 +11,14 @@ import { extractProposals } from "../bakery/proposals";
 import { buildTranscript, pickAttachments, type Attach } from "../conversation/build";
 import { ensureUploaded } from "../conversation/media";
 import { getGroup, type Group } from "../db/repo/groups";
-import { insertMessage, windowMessages } from "../db/repo/messages";
-import { finishRun, releaseLease, saveCheckpoint, type RunRow } from "../db/repo/runs";
+import { getMessage, insertMessage, lastBotMessageAt, windowMessages, type StoredMessage } from "../db/repo/messages";
+import { finishRun, hasUserRunSince, releaseLease, saveCheckpoint, type RunRow } from "../db/repo/runs";
 import type { RunSent, RunSnapshot } from "../db/schema";
 import type { Db } from "../db/types";
 import { t, type Lang } from "../i18n";
 import type { ModelInfoLite } from "../models/catalog";
 import { parseSettings, type GroupSettings } from "../settings/schema";
-import { messageParts, sendAnswer, sendText, sourcesBlock } from "../telegram/send";
+import { sendAnswer, sendText, sourcesBlock, type SentPart } from "../telegram/send";
 import type { TgApi } from "../telegram/types";
 import { errorText } from "../util/errors";
 import { log } from "../util/log";
@@ -41,14 +41,15 @@ export type LoopDeps = {
   token: string;
   fetch: typeof fetch;
   models(): Promise<ModelInfoLite[]>;
-  /** Shown as the sender of the bot's stored answer rows. */
-  botName: string;
+  /** Shown as the sender of the bot's stored answer rows (resolved inside the run's error handling). */
+  botName(): Promise<string>;
   /** Fire-and-forget; logs its own failures (the same hook the dispatcher uses for pruned rows). */
   deleteFiles(ids: string[]): void;
 };
 
 const MAX_PAUSES = 5;
-const MAX_ATTEMPTS = 3;
+/** Claims per run; counted at claim time, so a run that crashes the process also runs out. */
+export const MAX_ATTEMPTS = 3;
 // 4xx statuses worth retrying: timeout, conflict, rate limit.
 const RETRYABLE_4XX = new Set([408, 409, 429]);
 
@@ -63,6 +64,7 @@ type Ctx = {
   snap: RunSnapshot | null;
   sent: RunSent;
   steps: number;
+  botName: string;
 };
 
 type End = "answer" | "cut" | "refusal" | "unexpected";
@@ -78,6 +80,7 @@ export async function processRun(run: RunRow, deps: LoopDeps): Promise<void> {
     snap: run.snapshot,
     sent: run.sent,
     steps: run.steps,
+    botName: "",
   };
   try {
     await drive(ctx);
@@ -110,6 +113,14 @@ async function drive(ctx: Ctx): Promise<void> {
   }
   const settings = parseSettings(group.settings);
   ctx.lang = settings.language;
+  // Attempts are counted when the run is claimed; one claim too many means earlier claims
+  // never got to finish (e.g. the process died mid-run), so it stops here.
+  if (run.attempts > MAX_ATTEMPTS) {
+    log("run.claims_exhausted", { ...ids(ctx), attempts: run.attempts });
+    return fail(ctx, `attempts_exhausted: claimed ${run.attempts} times`);
+  }
+  if (ctx.chime && !ctx.snap && (await chimeIsStale(ctx))) return;
+  ctx.botName = await deps.botName();
 
   let snap = ctx.snap ?? (await buildSnapshot(ctx, group, settings));
   if (!ctx.snap) {
@@ -143,6 +154,48 @@ async function drive(ctx: Ctx): Promise<void> {
   await finalize(ctx, snap);
 }
 
+// A chime run that waited behind other work is dropped when the bot has spoken since it was
+// created, or someone has asked it something since: interjecting then would be one too many.
+async function chimeIsStale(ctx: Ctx): Promise<boolean> {
+  const { run, deps } = ctx;
+  const lastBot = await lastBotMessageAt(deps.db, run.chatId);
+  const reason =
+    lastBot && lastBot > run.createdAt
+      ? "bot_spoke_since"
+      : (await hasUserRunSince(deps.db, run.chatId, run.createdAt))
+        ? "user_run_since"
+        : null;
+  if (!reason) return false;
+  log("run.chime_skipped", { ...ids(ctx), reason });
+  if (!(await finishRun(deps.db, run.id, deps.owner, "done", `skipped: ${reason}`))) throw new LeaseLost();
+  return true;
+}
+
+// The trigger's target and the message it replies to, when the history window doesn't hold
+// them (older than the window), so the model always sees what it is asked about. Rows from
+// before a "forget" stay forgotten.
+async function focusRowsOutsideWindow(
+  ctx: Ctx,
+  rows: StoredMessage[],
+  forgetBefore: Date | null,
+): Promise<StoredMessage[]> {
+  const { run, deps } = ctx;
+  const inWindow = new Map(rows.map((r) => [r.messageId, r]));
+  const extra: StoredMessage[] = [];
+  const fetch = async (id: number | null | undefined): Promise<StoredMessage | null> => {
+    if (id == null) return null;
+    const known = inWindow.get(id) ?? extra.find((r) => r.messageId === id);
+    if (known) return known;
+    const row = await getMessage(deps.db, run.chatId, id);
+    if (!row || (forgetBefore && row.date <= forgetBefore)) return null;
+    extra.push(row);
+    return row;
+  };
+  const target = await fetch(run.trigger.targetMessageId);
+  await fetch(target?.replyToId);
+  return extra.sort((a, b) => a.seq - b.seq);
+}
+
 async function buildSnapshot(ctx: Ctx, group: Group, settings: GroupSettings): Promise<RunSnapshot> {
   const { run, deps } = ctx;
   const trigger = run.trigger;
@@ -152,7 +205,10 @@ async function buildSnapshot(ctx: Ctx, group: Group, settings: GroupSettings): P
     window: settings.historyWindow,
     after: group.forgetBefore,
   });
-  const target = rows.find((r) => r.messageId === trigger.targetMessageId);
+  const leading = await focusRowsOutsideWindow(ctx, rows, group.forgetBefore);
+  if (leading.length) log("run.focus_outside_window", { ...ids(ctx), message_ids: leading.map((r) => r.messageId) });
+  const all = [...leading, ...rows];
+  const target = all.find((r) => r.messageId === trigger.targetMessageId);
   const focus = [trigger.messageId, trigger.targetMessageId, target?.replyToId].filter((id): id is number => id != null);
   const attach = new Map<number, Attach>();
   const uploadDeps = {
@@ -162,11 +218,17 @@ async function buildSnapshot(ctx: Ctx, group: Group, settings: GroupSettings): P
     fetch: deps.fetch,
     upload: (buf: Buffer, name: string, mime: string) => deps.llm.upload(buf, name, mime),
   };
-  for (const row of pickAttachments(rows, focus)) {
+  for (const row of pickAttachments(all, focus)) {
     const fileId = await ensureUploaded(uploadDeps, row);
     if (fileId) attach.set(row.messageId, { type: row.media?.kind === "pdf" ? "document" : "image", fileId });
   }
-  const transcript = buildTranscript(rows, { attach, noNewer: t(ctx.lang, "noNewerMessages") });
+  const noNewer = t(ctx.lang, "noNewerMessages");
+  let transcript = buildTranscript(rows, { attach, noNewer, leading });
+  if (transcript.length === 0 && target && !leading.includes(target)) {
+    // Only bot rows in the window (e.g. a reaction to the bot's own message after a forget):
+    // the target goes first as a message of its own, so the request is never empty.
+    transcript = buildTranscript(rows.filter((r) => r !== target), { attach, noNewer, leading: [...leading, target] });
+  }
   const models = await deps.models();
   const snap = newSnapshot({
     settings,
@@ -179,7 +241,7 @@ async function buildSnapshot(ctx: Ctx, group: Group, settings: GroupSettings): P
   log("run.built", {
     ...ids(ctx),
     trigger: trigger.type,
-    rows: rows.length,
+    rows: all.length,
     attached: attach.size,
     model: snap.model,
     effort: snap.effort,
@@ -211,6 +273,11 @@ function logStep(ctx: Ctx, msg: BetaMessage): void {
   const mcpTools = msg.content
     .filter((b) => b.type === "mcp_tool_use")
     .map((b) => ({ server: b.server_name, name: b.name, error: results.get(b.id) ?? null }));
+  for (const b of msg.content) {
+    if (b.type !== "mcp_tool_result" || !b.is_error) continue;
+    // How the bakery's own failures (a wrong key, an outage) surface is unverified: watch for this.
+    log("run.bakery_tool_error", { ...ids(ctx), tool_use_id: b.tool_use_id, text: toolResultText(b.content) });
+  }
   log("run.step", {
     ...ids(ctx),
     step: ctx.steps + 1,
@@ -222,6 +289,17 @@ function logStep(ctx: Ctx, msg: BetaMessage): void {
     output_tokens: msg.usage.output_tokens,
     ...(mcpTools.length ? { mcp_tools: mcpTools } : {}),
   });
+}
+
+// The text of an MCP tool result, scrubbed of secrets and clipped for the log.
+function toolResultText(content: unknown): string {
+  const raw =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content.map((c) => (c && typeof c === "object" && "text" in c ? String(c.text) : "")).join("")
+        : "";
+  return errorText(raw).slice(0, 500);
 }
 
 function endOf(stop: string | null | undefined): End {
@@ -252,17 +330,21 @@ async function finalize(ctx: Ctx, snap: RunSnapshot): Promise<void> {
 
   if (!ctx.sent.answered) await deliverAnswer(ctx, end, blocks);
   await deliverCards(ctx, blocks);
-  // The notice says "I answered without its data", so it only follows an answer.
-  if (snap.bakeryDropped && !ctx.sent.bakeryNoticeSent && ctx.sent.answerIds.length > 0) {
-    await sendText(deps.tg, run.chatId, t(ctx.lang, "bakeryUnavailableNotice"), {
-      replyTo: ctx.sent.answerIds[0],
-      threadId: run.threadId,
-    });
-    ctx.sent = { ...ctx.sent, bakeryNoticeSent: true };
-    await checkpoint(ctx, { sent: ctx.sent });
-  }
+  await deliverBakeryNotice(ctx);
   if (!(await finishRun(deps.db, run.id, deps.owner, "done"))) throw new LeaseLost();
   log("run.done", { ...ids(ctx), end, steps: ctx.steps, answer_ids: ctx.sent.answerIds, cards: ctx.sent.cards });
+}
+
+// The notice says "I answered without its data", so it only follows an answer.
+async function deliverBakeryNotice(ctx: Ctx): Promise<void> {
+  const { run, deps } = ctx;
+  if (!ctx.snap?.bakeryDropped || ctx.sent.bakeryNoticeSent || ctx.sent.answerIds.length === 0) return;
+  await sendText(deps.tg, run.chatId, t(ctx.lang, "bakeryUnavailableNotice"), {
+    replyTo: ctx.sent.answerIds[0],
+    threadId: run.threadId,
+  });
+  ctx.sent = { ...ctx.sent, bakeryNoticeSent: true };
+  await checkpoint(ctx, { sent: ctx.sent });
 }
 
 async function deliverAnswer(ctx: Ctx, end: End, blocks: BetaContentBlock[]): Promise<void> {
@@ -277,47 +359,54 @@ async function deliverAnswer(ctx: Ctx, end: End, blocks: BetaContentBlock[]): Pr
   } else if (end === "cut" && (answer || !ctx.chime)) {
     text = [answer, t(lang, "cutShort")].filter(Boolean).join("\n\n");
   }
+  if (!text && !ctx.chime) {
+    // Someone asked and is waiting: an empty answer (only thinking, or only tool calls) gets a notice.
+    log("run.empty_answer", { ...ids(ctx), end });
+    text = t(lang, "noAnswer");
+  }
   if (!text) {
     log("run.silent", { ...ids(ctx), end, chime: ctx.chime });
     ctx.sent = { ...ctx.sent, answered: true };
     await checkpoint(ctx, { sent: ctx.sent });
     return;
   }
-  const answerIds = await sendAnswer(deps.tg, run.chatId, text, {
+  // Parts delivered by an earlier attempt are skipped; each part is recorded the moment it
+  // lands, so a crash or a failed later part never sends one twice.
+  const from = ctx.sent.partsSent ?? 0;
+  if (from > 0) log("run.answer_resumed", { ...ids(ctx), parts_sent: from });
+  await sendAnswer(deps.tg, run.chatId, text, {
     replyTo: run.trigger.targetMessageId,
     threadId: run.threadId,
     tailMd2: sourcesBlock(t(lang, "sourcesLabel"), sources),
+    from,
+    onPartSent: (part) => onPartSent(ctx, part),
   });
-  // Recorded straight after the send, so a crash from here on never sends it again.
-  ctx.sent = { ...ctx.sent, answered: true, answerIds };
-  const owned = await saveCheckpoint(deps.db, run.id, deps.owner, { sent: ctx.sent });
-  log("run.answered", { ...ids(ctx), end, message_ids: answerIds, sources: sources.length });
-  await storeAnswer(ctx, text, answerIds);
-  if (!owned) throw new LeaseLost();
+  ctx.sent = { ...ctx.sent, answered: true };
+  await checkpoint(ctx, { sent: ctx.sent });
+  log("run.answered", { ...ids(ctx), end, message_ids: ctx.sent.answerIds, sources: sources.length });
 }
 
-// Each part the answer went out as becomes a bot row, so later runs see what the bot said.
-// The answer is already in the chat: a failure here is logged, not retried.
-async function storeAnswer(ctx: Ctx, text: string, messageIds: number[]): Promise<void> {
+// Recorded straight after the part's send; the part then becomes a bot row, so later runs see
+// what the bot said. The part is already in the chat: a failed store is logged, not retried.
+async function onPartSent(ctx: Ctx, part: SentPart): Promise<void> {
   const { run, deps } = ctx;
-  // The same split sendAnswer makes; its ids come one per part, in order (a separate
-  // sources message, if any, comes last and isn't stored).
-  const parts = messageParts(text.toWellFormed());
-  for (const [i, part] of parts.entries()) {
-    const messageId = messageIds[i];
-    if (messageId === undefined) break;
+  ctx.sent = { ...ctx.sent, answerIds: [...ctx.sent.answerIds, ...part.ids], partsSent: part.index + 1 };
+  const owned = await saveCheckpoint(deps.db, run.id, deps.owner, { sent: ctx.sent });
+  // The first id is the part itself; a separate sources message, if any, comes after and isn't stored.
+  const messageId = part.ids[0];
+  if (messageId !== undefined) {
     try {
       const row = await insertMessage(deps.db, {
         chatId: run.chatId,
         messageId,
         threadId: run.threadId,
         fromId: null,
-        fromName: deps.botName,
+        fromName: ctx.botName,
         isBot: true,
         date: deps.now(),
-        text: part,
+        text: part.text,
         entities: null,
-        replyToId: i === 0 ? run.trigger.targetMessageId : null,
+        replyToId: part.index === 0 ? run.trigger.targetMessageId : null,
         media: null,
         mediaGroupId: null,
       });
@@ -326,6 +415,7 @@ async function storeAnswer(ctx: Ctx, text: string, messageIds: number[]): Promis
       log("run.store_answer_failed", { ...ids(ctx), message_id: messageId, error: errorText(err) });
     }
   }
+  if (!owned) throw new LeaseLost();
 }
 
 async function deliverCards(ctx: Ctx, blocks: BetaContentBlock[]): Promise<void> {
@@ -358,20 +448,22 @@ function httpStatus(err: unknown): number | null {
   return null;
 }
 
+// The attempt was counted at claim time; this only decides between failing now and releasing
+// the run for a later retry (the runner then holds it back for attempts*30 s).
 async function onError(ctx: Ctx, err: unknown): Promise<void> {
   const status = httpStatus(err);
-  log("run.error", { ...ids(ctx), status, attempts: ctx.run.attempts, error: errorText(err) });
+  const attempts = ctx.run.attempts;
+  log("run.error", { ...ids(ctx), status, attempts, error: errorText(err) });
   if (status !== null && status >= 400 && status < 500 && !RETRYABLE_4XX.has(status)) {
     return fail(ctx, `http_${status}: ${errorText(err)}`);
   }
-  const attempts = ctx.run.attempts + 1;
   if (attempts >= MAX_ATTEMPTS) return fail(ctx, `attempts_exhausted: ${errorText(err)}`);
-  await checkpoint(ctx, { attempts });
   await releaseLease(ctx.deps.db, ctx.run.id, ctx.deps.owner);
   log("run.retry_later", { ...ids(ctx), attempts });
 }
 
-// Ends the run as failed. Cards for proposals already made still go out (best effort), and
+// Ends the run as failed. Cards for proposals already made and the bakery notice (after an
+// answer) still go out (best effort), and
 // whoever is waiting gets an apology, unless an answer already went out or nobody asked (chime).
 async function fail(ctx: Ctx, reason: string): Promise<void> {
   const { run, deps } = ctx;
@@ -381,6 +473,12 @@ async function fail(ctx: Ctx, reason: string): Promise<void> {
     } catch (err) {
       if (err instanceof LeaseLost) throw err;
       log("run.cards_failed", { ...ids(ctx), error: errorText(err) });
+    }
+    try {
+      await deliverBakeryNotice(ctx);
+    } catch (err) {
+      if (err instanceof LeaseLost) throw err;
+      log("run.bakery_notice_failed", { ...ids(ctx), error: errorText(err) });
     }
   }
   if (!(await finishRun(deps.db, run.id, deps.owner, "failed", reason))) throw new LeaseLost();

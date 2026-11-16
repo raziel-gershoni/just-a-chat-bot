@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildTranscript, pickAttachments } from "@/src/conversation/build";
 import type { StoredMessage } from "@/src/db/repo/messages";
 
@@ -66,8 +66,23 @@ describe("buildTranscript", () => {
     expect((out[0]!.content as { text: string }[])[0]!.text).toContain("see [PDF: a.pdf]</msg>");
   });
 
-  it("returns [] for no rows", () => {
-    expect(buildTranscript([], opts)).toEqual([]);
+  it("is never empty: no rows (or only bot rows) give one noNewer user turn", () => {
+    const only = [{ role: "user", content: [{ type: "text", text: "nothing new", cache_control: { type: "ephemeral" } }] }];
+    expect(buildTranscript([], opts)).toEqual(only);
+    expect(buildTranscript([row(1, { isBot: true, text: "x" })], opts)).toEqual(only);
+  });
+
+  it("puts leading rows first as their own <msg>, bot-written ones included, with their media", () => {
+    const old = row(1, { isBot: true, fromName: "Bot", text: "earlier answer", media: { kind: "photo", fileId: "p", label: "photo" } });
+    const out = buildTranscript([row(5, { isBot: true, text: "x" }), row(6, { text: "now" })], {
+      ...opts,
+      attach: new Map([[1, { type: "image" as const, fileId: "file_1" }]]),
+      leading: [old],
+    });
+    expect(out.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    const c = out[0]!.content as { type: string; text?: string; source?: unknown }[];
+    expect(c[0]!.text).toBe('<msg id="1" from="Bot" at="2026-07-01 12:05">earlier answer [photo attached]</msg>');
+    expect(c[1]!).toMatchObject({ type: "image", source: { type: "file", file_id: "file_1" } });
   });
 });
 
@@ -85,5 +100,14 @@ describe("pickAttachments", () => {
     expect(ids).not.toContain(2);
     expect(ids).not.toContain(14);
     expect(ids).toEqual(expect.arrayContaining([13, 15]));
+  });
+
+  it("logs a file skipped for size", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const big = row(1, { media: { kind: "photo", fileId: "p", fileSize: 21 * 1024 * 1024, label: "photo" } });
+    expect(pickAttachments([big], [1])).toEqual([]);
+    const lines = log.mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>);
+    expect(lines).toContainEqual(expect.objectContaining({ event: "media.too_large", message_id: 1, size: 21 * 1024 * 1024 }));
+    log.mockRestore();
   });
 });

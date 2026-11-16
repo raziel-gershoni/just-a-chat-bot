@@ -185,4 +185,40 @@ describe("createChimeScheduler", () => {
     s.stop();
     expect(t.pending.size).toBe(0);
   });
+
+  it("re-checks after the classifier: a mention answered meanwhile means no chime run", async () => {
+    const { db, llm, t, s, runs } = await setup();
+    await add(db, 1);
+    const classify = llm.classify.bind(llm);
+    llm.classify = async (p) => {
+      // While the classifier works, someone mentions the bot and a run is queued.
+      await createRun(db, { chatId: 1, threadId: null, trigger: { type: "mention", messageId: 1, targetMessageId: 1, requesterId: 1, requesterName: "a" } });
+      return classify(p);
+    };
+    s.onHumanMessage(1);
+    await t.fire();
+    expect(runs).toHaveLength(0);
+    expect(logged("chime.skip").map((l) => l.reason)).toEqual(["active_run_after_classify"]);
+  });
+
+  it("one fire() per chat at a time", async () => {
+    const { db, llm, t, s, runs } = await setup([YES, YES]);
+    await add(db, 1);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const classify = llm.classify.bind(llm);
+    llm.classify = async (p) => {
+      await gate;
+      return classify(p);
+    };
+    s.onHumanMessage(1);
+    const first = t.fire(); // runs up to the classifier and waits there
+    s.onHumanMessage(1);
+    const second = t.fire();
+    await second;
+    expect(logged("chime.skip").map((l) => l.reason)).toContain("in_flight");
+    release();
+    await first;
+    expect(runs).toHaveLength(1);
+  });
 });

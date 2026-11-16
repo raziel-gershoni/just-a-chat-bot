@@ -16,6 +16,7 @@ const schema = z.object({
   RAILWAY_PUBLIC_DOMAIN: optional,
   RAILWAY_GIT_COMMIT_SHA: optional,
   RAILWAY_GIT_COMMIT_MESSAGE: optional,
+  RAILWAY_DEPLOYMENT_ID: optional,
 });
 
 export type Env = {
@@ -31,6 +32,7 @@ export type Env = {
   PUBLIC_DOMAIN?: string;
   GIT_SHA?: string;
   GIT_MESSAGE?: string;
+  DEPLOYMENT_ID?: string;
 };
 
 export function loadEnv(source: Record<string, string | undefined> = process.env): Env {
@@ -53,6 +55,7 @@ export function loadEnv(source: Record<string, string | undefined> = process.env
     PUBLIC_DOMAIN: v.RAILWAY_PUBLIC_DOMAIN,
     GIT_SHA: v.RAILWAY_GIT_COMMIT_SHA,
     GIT_MESSAGE: v.RAILWAY_GIT_COMMIT_MESSAGE,
+    DEPLOYMENT_ID: v.RAILWAY_DEPLOYMENT_ID,
   };
 }
 

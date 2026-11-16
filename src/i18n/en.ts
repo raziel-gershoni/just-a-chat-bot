@@ -9,6 +9,7 @@ export const en = {
   refusal: "I can't help with that one.",
   cutShort: "(cut short)",
   runFailed: "Something went wrong and I couldn't answer. Please try again.",
+  noAnswer: "I couldn't come up with an answer this time. Please ask again.",
   sourcesLabel: "Sources",
   bakeryApprove: "Approve",
   bakeryReject: "Cancel",

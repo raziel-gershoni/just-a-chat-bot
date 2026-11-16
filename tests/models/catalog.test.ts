@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { describe, expect, test, vi } from "vitest";
 import { testDb } from "@/tests/helpers/db";
 import { fakeLlm } from "@/tests/helpers/fake-llm";
@@ -17,7 +18,7 @@ const info = (id: string, over: Record<string, any> = {}) =>
     ...over,
   }) as any;
 
-const lite = (id: string) => ({ id, displayName: id.toUpperCase(), maxTokens: 64000, efforts: ["low", "medium"], adaptive: true });
+const lite = (id: string) => ({ id, displayName: id.toUpperCase(), maxTokens: 64000, efforts: ["low", "medium"], adaptive: true, fallbacks: false });
 const t0 = new Date("2026-11-16T10:00:00Z");
 
 describe("toLite", () => {
@@ -26,8 +27,13 @@ describe("toLite", () => {
   });
   test("tolerates missing capabilities", () => {
     expect(toLite(info("m", { capabilities: null, max_tokens: null }))).toEqual({
-      id: "m", displayName: "M", maxTokens: 32000, efforts: [], adaptive: false,
+      id: "m", displayName: "M", maxTokens: 32000, efforts: [], adaptive: false, fallbacks: false,
     });
+  });
+  test("fallbacks from allowed_fallback_models", () => {
+    expect(toLite(info("m", { allowed_fallback_models: ["claude-opus-5-5"] })).fallbacks).toBe(true);
+    expect(toLite(info("m", { allowed_fallback_models: [] })).fallbacks).toBe(false);
+    expect(toLite(info("m", { allowed_fallback_models: null })).fallbacks).toBe(false);
   });
 });
 
@@ -70,6 +76,18 @@ describe("getModels", () => {
     const failing = fakeLlm([], { models: new Error("boom") });
     const got = await getModels({ db, llm: failing, now: () => new Date(t0.getTime() + 30 * 3600_000) });
     expect(got.map((m) => m.id)).toEqual(["a"]);
+  });
+
+  test("a failed cache write is logged and the fetched models are still returned", async () => {
+    const db = await testDb();
+    // Reads work, every write to the cache fails.
+    await db.execute(sql`create function no_writes() returns trigger language plpgsql as $$ begin raise exception 'disk full'; end $$`);
+    await db.execute(sql`create trigger no_writes before insert or update on models_cache for each row execute function no_writes()`);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const got = await getModels({ db, llm: fakeLlm([], { models: [info("a")] }), now: () => t0 });
+    expect(got.map((m) => m.id)).toEqual(["a"]);
+    expect(log.mock.calls.map((c) => JSON.parse(String(c[0])).event)).toContain("models.cache_write_failed");
+    log.mockRestore();
   });
 
   test("on error with no cache returns the default model", async () => {

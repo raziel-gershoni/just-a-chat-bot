@@ -21,9 +21,12 @@ export function buildParams(snap: RunSnapshot, bakery: { url: string; key: strin
   const params: Record<string, unknown> = {
     model: snap.model,
     max_tokens: snap.maxTokens,
+    // Automatic caching for the tool-loop tail (the API marks the last cacheable block), on top
+    // of the system and transcript breakpoints: 3 of the 4 allowed.
+    cache_control: { type: "ephemeral" },
     system: [{ type: "text", text: snap.system, cache_control: { type: "ephemeral" } }],
     messages: snap.messages,
-    output_config: { effort: snap.effort },
+    ...(snap.effort ? { output_config: { effort: snap.effort } } : {}),
     tools,
   };
   if (snap.thinking) params.thinking = { type: "adaptive" };
@@ -49,6 +52,14 @@ export function buildParams(snap: RunSnapshot, bakery: { url: string; key: strin
   return params as unknown as BetaMessageStreamParams;
 }
 
+// Fallbacks only where the catalog says the model accepts them (its allowed_fallback_models is
+// non-empty). A model missing from the catalog, or a catalog entry from before the field was
+// cached, gets none. Haiku rejects the parameter with a 400, whatever the catalog says.
+function supportsFallbacks(model: ModelInfoLite | undefined, id: string): boolean {
+  if ((model?.id ?? id).startsWith("claude-haiku")) return false;
+  return model?.fallbacks === true;
+}
+
 export function newSnapshot(input: {
   settings: GroupSettings;
   model: ModelInfoLite | undefined;
@@ -61,11 +72,11 @@ export function newSnapshot(input: {
   const bakery = settings.bakery && input.bakeryAvailable ? (input.chime ? "read" : "full") : null;
   return {
     model: settings.model,
-    effort: settings.effort,
+    // A catalog model without effort support gets no effort parameter.
+    effort: model && model.efforts.length === 0 ? null : settings.effort,
     maxTokens: Math.min(DEFAULT_MAX_TOKENS, model?.maxTokens ?? DEFAULT_MAX_TOKENS),
     thinking: model?.adaptive ?? true,
-    // Haiku rejects the fallbacks parameter with a 400.
-    fallbacks: !(model?.id ?? settings.model).startsWith("claude-haiku"),
+    fallbacks: supportsFallbacks(model, settings.model),
     bakery,
     system: systemPrompt(bakery !== null),
     context: input.context,

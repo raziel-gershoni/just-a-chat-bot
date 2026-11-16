@@ -167,23 +167,34 @@ async function sendTail(api: TgApi, chatId: number, tailMd2: string, opts: Reply
   return [m.message_id];
 }
 
+/** The parts sendAnswer sends `markdown` as (the one split; callers never re-split). */
+export function answerParts(markdown: string): string[] {
+  return messageParts(markdown.toWellFormed());
+}
+
+export type SentPart = { index: number; text: string; ids: number[] };
+
 // Sends a Claude answer (Markdown): split into parts, each rendered as MarkdownV2 with a
 // plain-text fallback. Only the first part replies to `replyTo`; all keep the thread.
 // `tailMd2` (pre-escaped MarkdownV2, e.g. a sources block) is appended to the last part
-// when the result fits in 4096 characters, else sent as its own message. Returns the sent
-// message ids in order; throws as soon as a part can't be delivered either way (the caller
-// retries the whole answer rather than leave its tail missing).
+// when the result fits in 4096 characters, else sent as its own message.
+// Each delivered part is reported to `onPartSent` (awaited) before the next is sent, so the
+// caller can checkpoint it; `from` skips the parts already delivered by an earlier attempt.
+// Returns the ids sent by this call, in order; throws as soon as a part can't be delivered
+// either way (the parts before it were already reported).
 // Text goes out as toWellFormed(): a lone UTF-16 surrogate would make Telegram reject the
 // whole message.
 export async function sendAnswer(
   api: TgApi, chatId: number, markdown: string,
-  opts: ReplyOpts & { tailMd2?: string },
+  opts: ReplyOpts & { tailMd2?: string; from?: number; onPartSent?: (part: SentPart) => Promise<void> },
 ): Promise<number[]> {
-  const parts = messageParts(markdown.toWellFormed());
+  const parts = answerParts(markdown);
   const tail = opts.tailMd2 ? `\n\n${opts.tailMd2}` : "";
   const ids: number[] = [];
   for (const [i, part] of parts.entries()) {
+    if (i < (opts.from ?? 0)) continue;
     const last = i === parts.length - 1;
+    const partIds: number[] = [];
     try {
       let attach = "";
       if (last && tail) {
@@ -191,12 +202,14 @@ export async function sendAnswer(
         const shown = renderedLength(part) + tail.replace(/\\([\s\S])/g, "$1").length;
         if (shown <= TELEGRAM_MAX_CHARS) attach = tail;
       }
-      ids.push(...await sendPart(api, chatId, part, attach, opts, i === 0));
-      if (last && tail && !attach) ids.push(...await sendTail(api, chatId, tail, opts));
+      partIds.push(...await sendPart(api, chatId, part, attach, opts, i === 0));
+      if (last && tail && !attach) partIds.push(...await sendTail(api, chatId, tail, opts));
     } catch (err) {
       log("telegram.part_failed", { chat_id: chatId, part: i + 1, of: parts.length, error: errorText(err) });
       throw err;
     }
+    ids.push(...partIds);
+    await opts.onPartSent?.({ index: i, text: part, ids: partIds });
   }
   return ids;
 }

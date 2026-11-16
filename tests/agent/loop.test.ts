@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { BetaMessage } from "@anthropic-ai/sdk/resources/beta/messages/messages";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
+import { GrammyError } from "grammy";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { processRun, type LoopDeps } from "@/src/agent/loop";
 import { upsertGroup, setGroupActive } from "@/src/db/repo/groups";
@@ -100,7 +101,7 @@ function deps(db: Db, over: Partial<LoopDeps> & { llm: FakeLlm; tg?: FakeTg }): 
     token: "TOKEN",
     fetch: vi.fn(async () => new Response(new Uint8Array([1, 2, 3]))) as unknown as typeof fetch,
     models: async () => [DEFAULT_MODEL],
-    botName: "Bot",
+    botName: async () => "Bot",
     deleteFiles: vi.fn(),
     ...over,
   } as LoopDeps & { tg: FakeTg };
@@ -132,7 +133,7 @@ describe("processRun", () => {
     expect(llm.calls).toHaveLength(1);
     const msgs = llm.calls[0]!.messages as { role: string; content: unknown }[];
     expect(msgs.at(-1)!.role).toBe("system");
-    expect(String(msgs.at(-1)!.content)).toContain("Group: Family");
+    expect(String(msgs.at(-1)!.content)).toContain('Group: "Family"');
     expect(JSON.stringify(msgs[0])).toContain("what time is it in Tokyo?");
 
     const s = sends(d.tg);
@@ -331,7 +332,7 @@ describe("processRun", () => {
     expect(s.map(sentText)).toEqual([expect.stringContaining("Answer without bakery"), t("en", "bakeryUnavailableNotice")]);
     const done = await readRun(db, run.id);
     expect(done.status).toBe("done");
-    expect(done.attempts).toBe(0);
+    expect(done.attempts).toBe(1); // the one claim; the bakery drop is not a retry
     expect(done.snapshot!.bakeryDropped).toBe(true);
     expect(done.sent.bakeryNoticeSent).toBe(true);
     expect(logged("run.bakery_dropped")).toHaveLength(1);
@@ -374,7 +375,7 @@ describe("processRun", () => {
     await processRun(run, d);
     const row = await readRun(db, run.id);
     expect(row.status).toBe("failed");
-    expect(row.attempts).toBe(0);
+    expect(row.attempts).toBe(1); // the one claim: a 400 is not retried
     expect(llm.calls).toHaveLength(1);
     expect(sends(d.tg).map(sentText)).toEqual([t("en", "runFailed")]);
   });
@@ -434,5 +435,181 @@ describe("processRun", () => {
     expect(sends(d.tg)).toHaveLength(0);
     const row = await readRun(db, run.id);
     expect([row.status, row.error]).toEqual(["failed", "inactive"]);
+  });
+
+  it("part 2 of 3 fails: the retry sends only parts 2 and 3, part 1 exactly once", async () => {
+    const { db, run } = await setup();
+    const para = (c: string) => c.repeat(3000);
+    const long = [para("a"), para("b"), para("c")].join("\n\n");
+    const llm = fakeLlm([reply([text(long)])]);
+    const tg = fakeTg();
+    const send = tg.sendMessage.bind(tg);
+    let down = true;
+    tg.sendMessage = (async (...args: Parameters<FakeTg["sendMessage"]>) => {
+      // Part 2 can't be delivered at all (MarkdownV2 and the plain fallback) on the first attempt.
+      if (down && String(args[1]).startsWith("b")) throw new Error("socket hang up");
+      return send(...args);
+    }) as FakeTg["sendMessage"];
+
+    await processRun(run, deps(db, { llm, tg }));
+    let row = await readRun(db, run.id);
+    expect([row.status, row.leaseOwner]).toEqual(["running", null]);
+    expect(row.sent).toMatchObject({ answered: false, answerIds: [1000], partsSent: 1 });
+
+    down = false;
+    await processRun(await reclaim(db, "B", later(2)), deps(db, { llm: fakeLlm([]), tg, owner: "B" }));
+    row = await readRun(db, run.id);
+    expect(row.status).toBe("done");
+    expect(row.sent).toMatchObject({ answered: true, answerIds: [1000, 1001, 1002], partsSent: 3 });
+    const bodies = sends(tg).map(sentText);
+    expect(bodies.filter((b) => b.startsWith("a"))).toHaveLength(1);
+    expect(bodies.filter((b) => b.startsWith("b"))).toHaveLength(1);
+    expect(bodies.filter((b) => b.startsWith("c"))).toHaveLength(1);
+    // Only the first part replies to the trigger; resumed parts don't.
+    expect(sentParams(sends(tg)[0]!).reply_parameters.message_id).toBe(5);
+    expect(sentParams(sends(tg).at(-1)!).reply_parameters).toBeUndefined();
+    // Each delivered part is one bot row with exactly the text it went out as.
+    expect((await getMessage(db, CHAT, 1000))!.text).toBe(para("a"));
+    expect((await getMessage(db, CHAT, 1001))!.text).toBe(para("b"));
+    expect((await getMessage(db, CHAT, 1002))!.text).toBe(para("c"));
+  });
+
+  it("a reaction to a message older than the window puts that message and its photo in the request", async () => {
+    const db = await testDb();
+    await upsertGroup(db, { chatId: CHAT, title: "Family", settings: { ...defaultSettings("en"), historyWindow: 50 }, token: "tok" });
+    await insertMessage(db, msg(CHAT, 1, { fromName: "Dana", text: "look at my cake", media: { kind: "photo", fileId: "tgcake", label: "photo" } }));
+    for (let i = 2; i <= 120; i++) await insertMessage(db, msg(CHAT, i, { text: `chat ${i}` }));
+    await createRun(db, {
+      chatId: CHAT,
+      threadId: null,
+      trigger: { type: "reaction", messageId: 1, targetMessageId: 1, requesterId: 10, requesterName: "Avi", emoji: "👾" },
+    });
+    const run = (await claimNextRun(db, CHAT, "A", LEASE, T0))!;
+    const llm = fakeLlm([reply([text("Lovely cake")])]);
+    await processRun(run, deps(db, { llm }));
+
+    const json = JSON.stringify(llm.calls[0]!.messages);
+    expect(json).toContain("look at my cake");
+    expect(json.indexOf("look at my cake")).toBeLessThan(json.indexOf("chat 120"));
+    expect(llm.uploads).toContainEqual({ name: "1.jpg", mime: "image/jpeg" });
+    expect(json).toContain('"file_id":"file_1"');
+    expect(logged("run.focus_outside_window")[0]).toMatchObject({ message_ids: [1] });
+  });
+
+  it("an out-of-window target from before a forget stays forgotten", async () => {
+    const db = await testDb();
+    await upsertGroup(db, { chatId: CHAT, title: "Family", settings: { ...defaultSettings("en"), historyWindow: 50 }, token: "tok" });
+    await insertMessage(db, msg(CHAT, 1, { text: "secret old" }));
+    for (let i = 2; i <= 120; i++) await insertMessage(db, msg(CHAT, i, { text: `chat ${i}` }));
+    await db.update(groups).set({ forgetBefore: msg(CHAT, 1).date }).where(eq(groups.chatId, CHAT));
+    await createRun(db, {
+      chatId: CHAT,
+      threadId: null,
+      trigger: { type: "reaction", messageId: 1, targetMessageId: 1, requesterId: 10, requesterName: "Avi", emoji: "👾" },
+    });
+    const llm = fakeLlm([reply([text("ok")])]);
+    await processRun((await claimNextRun(db, CHAT, "A", LEASE, T0))!, deps(db, { llm }));
+    expect(JSON.stringify(llm.calls[0]!.messages)).not.toContain("secret old");
+  });
+
+  it("an empty answer to a mention sends the localized no-answer notice", async () => {
+    const { db, run } = await setup();
+    const llm = fakeLlm([reply([{ type: "thinking", thinking: "", signature: "sig" }])]);
+    const d = deps(db, { llm });
+    await processRun(run, d);
+    expect(sends(d.tg)).toHaveLength(1);
+    expect(sentText(sends(d.tg)[0]!)).toContain("Please ask again");
+    expect(sentParams(sends(d.tg)[0]!).reply_parameters.message_id).toBe(5);
+    expect((await readRun(db, run.id)).status).toBe("done");
+    expect(logged("run.empty_answer")).toHaveLength(1);
+  });
+
+  it("logs each bakery tool error result with its scrubbed text", async () => {
+    const { db, run } = await setup({ settings: { bakery: true } });
+    const content = [
+      { type: "mcp_tool_use", id: "u1", name: "get_sales", server_name: "bakery", input: {} },
+      { type: "mcp_tool_result", tool_use_id: "u1", is_error: true, content: [{ type: "text", text: "401 bad key bmcp_leaked123" }] },
+      text("The bakery isn't answering."),
+    ];
+    const d = deps(db, { llm: fakeLlm([reply(content)]), bakeryCfg: CFG, bakery: fakeBakery() });
+    await processRun(run, d);
+    const [e] = logged("run.bakery_tool_error");
+    expect(e).toMatchObject({ tool_use_id: "u1", text: "401 bad key [bakery-key]" });
+  });
+
+  it("a run claimed more than 3 times (each earlier claim died) fails with the apology without calling Claude", async () => {
+    const { db } = await setup();
+    // Three earlier claims whose process died mid-run (the lease simply expired each time).
+    await reclaim(db, "B", later(1));
+    await reclaim(db, "C", later(2));
+    const run = await reclaim(db, "D", later(3));
+    expect(run.attempts).toBe(4);
+    const llm = fakeLlm([]);
+    const d = deps(db, { llm, owner: "D" });
+    await processRun(run, d);
+    expect(llm.calls).toHaveLength(0);
+    const row = await readRun(db, run.id);
+    expect(row.status).toBe("failed");
+    expect(row.error).toContain("attempts_exhausted");
+    expect(sends(d.tg).map(sentText)).toEqual([t("en", "runFailed")]);
+  });
+
+  it("a failing bot-name lookup goes through the run's error handling and releases the lease", async () => {
+    const { db, run } = await setup();
+    const d = deps(db, { llm: fakeLlm([]), botName: async () => { throw new Error("getMe failed"); } });
+    await processRun(run, d);
+    const row = await readRun(db, run.id);
+    expect([row.status, row.leaseOwner]).toEqual(["running", null]);
+    expect(logged("run.retry_later")).toHaveLength(1);
+  });
+
+  it("a chime run is skipped when the bot answered after it was created", async () => {
+    const { db } = await setup();
+    const db2 = db;
+    await db2.update(runs).set({ status: "done", leaseOwner: null }).where(eq(runs.chatId, CHAT));
+    await createRun(db2, { chatId: CHAT, threadId: null, trigger: { type: "chime", messageId: 5, targetMessageId: 5, requesterId: null, requesterName: null } });
+    const run = (await claimNextRun(db2, CHAT, "A", LEASE, T0))!;
+    await insertMessage(db2, msg(CHAT, 900, { isBot: true, fromId: null, text: "answer", date: new Date(run.createdAt.getTime() + 1000) }));
+    const llm = fakeLlm([]);
+    const d = deps(db2, { llm });
+    await processRun(run, d);
+    expect(llm.calls).toHaveLength(0);
+    expect(sends(d.tg)).toHaveLength(0);
+    const row = await readRun(db2, run.id);
+    expect([row.status, row.error]).toEqual(["done", "skipped: bot_spoke_since"]);
+    expect(logged("run.chime_skipped")[0]).toMatchObject({ reason: "bot_spoke_since" });
+  });
+
+  it("a chime run is skipped when a user triggered a run after it was created", async () => {
+    const { db } = await setup();
+    await db.update(runs).set({ status: "done", leaseOwner: null }).where(eq(runs.chatId, CHAT));
+    await createRun(db, { chatId: CHAT, threadId: null, trigger: { type: "chime", messageId: 5, targetMessageId: 5, requesterId: null, requesterName: null } });
+    const run = (await claimNextRun(db, CHAT, "A", LEASE, T0))!;
+    await db.execute(sql`select pg_sleep(0.01)`);
+    await createRun(db, { chatId: CHAT, threadId: null, trigger: { type: "mention", messageId: 6, targetMessageId: 6, requesterId: 1, requesterName: "x" } });
+    const llm = fakeLlm([]);
+    await processRun(run, deps(db, { llm }));
+    expect(llm.calls).toHaveLength(0);
+    expect((await readRun(db, run.id)).error).toBe("skipped: user_run_since");
+  });
+
+  it("a run that fails after answering with the bakery dropped still posts the bakery notice", async () => {
+    const { db, run } = await setup({ settings: { bakery: true } });
+    const tg = fakeTg();
+    const send = tg.sendMessage.bind(tg);
+    // The card (its fallback summary is "הצעה") is refused for good: the run fails after the answer.
+    tg.sendMessage = (async (...args: Parameters<FakeTg["sendMessage"]>) => {
+      if (args[1] === "הצעה") throw new GrammyError("refused", { ok: false, error_code: 400, description: "Bad Request" }, "sendMessage", {});
+      return send(...args);
+    }) as FakeTg["sendMessage"];
+    const llm = fakeLlm([apiError(400, "MCP server bakery: 401 Unauthorized"), reply(propose)]);
+    const d = deps(db, { llm, tg, bakeryCfg: CFG, bakery: fakeBakery() });
+    await processRun(run, d);
+    expect((await readRun(db, run.id)).status).toBe("failed");
+    const bodies = sends(d.tg).map(sentText);
+    expect(bodies[0]).toContain("approve it on the card");
+    expect(bodies).toContain(t("en", "bakeryUnavailableNotice"));
+    const row = await readRun(db, run.id);
+    expect(row.sent.bakeryNoticeSent).toBe(true);
   });
 });

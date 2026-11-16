@@ -8,8 +8,10 @@ import {
   deleteChatRuns,
   finishRun,
   hasActiveRun,
+  hasUserRunSince,
   pruneRuns,
   releaseLease,
+  releaseUnstarted,
   renewLease,
   saveCheckpoint,
 } from "@/src/db/repo/runs";
@@ -71,7 +73,41 @@ test("saveCheckpoint writes only for the lease owner", async () => {
   expect(await saveCheckpoint(db, a.id, "z", { steps: 5 })).toBe(false);
   expect(await saveCheckpoint(db, a.id, "x", { steps: 3, attempts: 1, sent: { answerIds: [9], answered: true, cards: [] } })).toBe(true);
   const r = await claimNextRun(db, 1, "x", 1000, at(2000));
-  expect([r?.steps, r?.attempts, r?.sent.answerIds]).toEqual([3, 1, [9]]);
+  // The claim itself counts one more attempt.
+  expect([r?.steps, r?.attempts, r?.sent.answerIds]).toEqual([3, 2, [9]]);
+});
+
+test("each claim counts an attempt; releaseUnstarted gives a never-started claim back", async () => {
+  const db = await testDb();
+  const a = await mk(db);
+  expect((await claimNextRun(db, 1, "x", 1000, t0))!.attempts).toBe(1);
+  expect((await claimNextRun(db, 1, "y", 1000, at(2000)))!.attempts).toBe(2);
+  await releaseUnstarted(db, a.id, "x"); // not the owner: no change
+  await releaseUnstarted(db, a.id, "y");
+  const r = await claimNextRun(db, 1, "z", 1000, at(2000));
+  expect(r!.attempts).toBe(2);
+});
+
+test("a run created twice for one user trigger exists once; chime runs are never deduped", async () => {
+  const db = await testDb();
+  const t = { type: "reaction", messageId: 500, targetMessageId: 500, requesterId: 1, requesterName: "u" } as const;
+  expect(await createRun(db, { chatId: 1, threadId: null, trigger: t })).not.toBeNull();
+  expect(await createRun(db, { chatId: 1, threadId: null, trigger: { ...t, requesterId: 2 } })).toBeNull();
+  expect(await createRun(db, { chatId: 2, threadId: null, trigger: t })).not.toBeNull();
+  const chime = { ...t, type: "chime", requesterId: null, requesterName: null } as const;
+  expect(await createRun(db, { chatId: 1, threadId: null, trigger: chime })).not.toBeNull();
+  expect(await createRun(db, { chatId: 1, threadId: null, trigger: chime })).not.toBeNull();
+});
+
+test("hasUserRunSince ignores chime runs and older runs", async () => {
+  const db = await testDb();
+  const since = new Date(Date.now() - 60_000);
+  const chime = { type: "chime", messageId: 1, targetMessageId: 1, requesterId: null, requesterName: null } as const;
+  await createRun(db, { chatId: 1, threadId: null, trigger: chime });
+  expect(await hasUserRunSince(db, 1, since)).toBe(false);
+  await mk(db);
+  expect(await hasUserRunSince(db, 1, since)).toBe(true);
+  expect(await hasUserRunSince(db, 1, new Date(Date.now() + 60_000))).toBe(false);
 });
 
 test("renewLease and releaseLease respect ownership", async () => {

@@ -30,11 +30,14 @@ export type RunSent = {
   answered: boolean;
   cards: number[];
   bakeryNoticeSent?: boolean;
+  /** How many answer parts are delivered (each recorded as it lands); a retry sends only the rest. */
+  partsSent?: number;
 };
 
 export type RunSnapshot = {
   model: string;
-  effort: string;
+  /** Null when the model has no effort setting (output_config.effort is then not sent). */
+  effort: string | null;
   maxTokens: number;
   thinking: boolean;
   fallbacks: boolean;
