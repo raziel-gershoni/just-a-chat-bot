@@ -265,7 +265,7 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
   3. Confirm membership with `getChatMember`.
   4. Issue a short-lived JWT (`jose`).
 
-  initData travels in a header, never in the query string.
+  initData travels in the JSON body of the session POST, never in the query string.
 - **One page.** Mobile-first; light/dark follows the device; UI in Hebrew/English/Russian by the viewer's Telegram language, with RTL; lucide icons; the `just-a-list-manager` look. Settings:
   - **Model:** list from the Models API (active models with image input), cached for 1 day. Default Opus 5.5.
   - **Effort:** low/medium/high/xhigh/max, limited to what the model supports. Default medium.

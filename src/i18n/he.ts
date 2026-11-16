@@ -16,6 +16,8 @@ export const he: Record<MsgKey, string> = {
   bakeryUnreachable: "לא הצלחתי להגיע למאפייה. נסו שוב.",
   bakeryUnavailableNotice: "המאפייה לא הייתה זמינה, אז עניתי בלי הנתונים שלה.",
   noNewerMessages: "אין הודעות חדשות.",
+  deployPing: "just-a-chat-bot עודכן לגרסה {sha}: {message}",
+  deployPingNoMessage: "just-a-chat-bot עודכן לגרסה {sha}",
 
   // Settings Mini App
   miniLoading: "טוען את ההגדרות…",

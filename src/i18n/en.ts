@@ -14,6 +14,8 @@ export const en = {
   bakeryUnreachable: "Couldn't reach the bakery. Please try again.",
   bakeryUnavailableNotice: "The bakery couldn't be reached, so I answered without its data.",
   noNewerMessages: "No newer messages.",
+  deployPing: "just-a-chat-bot deployed {sha}: {message}",
+  deployPingNoMessage: "just-a-chat-bot deployed {sha}",
 
   // Settings Mini App
   miniLoading: "Loading settings…",

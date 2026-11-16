@@ -16,6 +16,8 @@ export const ru: Record<MsgKey, string> = {
   bakeryUnreachable: "Не удалось связаться с пекарней. Попробуйте ещё раз.",
   bakeryUnavailableNotice: "Пекарня недоступна, поэтому я ответил без её данных.",
   noNewerMessages: "Новых сообщений нет.",
+  deployPing: "just-a-chat-bot обновлён до версии {sha}: {message}",
+  deployPingNoMessage: "just-a-chat-bot обновлён до версии {sha}",
 
   // Settings Mini App
   miniLoading: "Загрузка настроек…",

@@ -1,9 +1,15 @@
-import { defineRailway, github, preserve, project, service } from "railway/iac";
+import { defineRailway, github, preserve, service } from "railway/iac";
 
 // Applied by the owner with `railway config plan` / `railway config apply`.
 // Railway deploys never read this file. Secret values stay in Railway:
 // preserve() keeps whatever value the dashboard already holds.
-export default defineRailway(() => {
+//
+// A named partial: the Railway project also runs other services from other repos, and a
+// whole-project file deletes every resource it omits. A partial only manages (and only ever
+// deletes) the resources it owns, so the owner's other services are never touched.
+export const partial = "just-a-chat-bot";
+
+export default defineRailway((ctx, project) => {
   const bot = service("just-a-chat-bot", {
     source: github("raziel-gershoni/just-a-chat-bot", { branch: "main" }),
     build: { builder: "RAILPACK", buildCommand: "npm run build" },
@@ -16,9 +22,10 @@ export default defineRailway(() => {
       restartPolicyMaxRetries: 10,
       drainingSeconds: 120,
     },
+    // NODE_ENV is not set here: `next start` sets it, and a build-time NODE_ENV=production
+    // could make the install skip the devDependencies `next build` needs.
     env: {
       NEXT_MANUAL_SIG_HANDLE: "true",
-      NODE_ENV: "production",
       TELEGRAM_BOT_TOKEN: preserve(),
       TELEGRAM_WEBHOOK_SECRET: preserve(),
       TELEGRAM_OWNER_ID: preserve(),
@@ -31,5 +38,6 @@ export default defineRailway(() => {
     },
   });
 
-  return project(process.env.RAILWAY_PROJECT_NAME ?? "just-a-chat-bot", { resources: [bot] });
+  // The linked project's own name, so applying never renames the owner's project.
+  return project(ctx.projectName ?? "just-a-chat-bot", { resources: [bot] });
 });
