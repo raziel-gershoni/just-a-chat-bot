@@ -28,6 +28,7 @@ Claude-powered Telegram group bot on Railway. Spec: `docs/superpowers/specs/2026
 - Times shown are Israel time, 24h, via `Intl.DateTimeFormat`.
 - Never store the bakery key (`BAKERY_MCP_KEY`): read it from env at call time, never put it in run snapshots, DB, logs or commits. `errorText` scrubs bot tokens and `bmcp_` keys.
 - Migrations: generate with `npm run db:generate`, commit the SQL in `drizzle/`. They are applied by the Railway pre-deploy command (`drizzle-kit migrate`), never by the build.
+- The pre-deploy migration runs while the old deployment still serves traffic, so every migration must work with the old code too. To drop or rename a column, first ship code that no longer uses it, then drop it in a later deploy.
 - Railway deploys do not read `.railway/railway.ts`; changing it needs `railway config plan` then `apply`.
 
 ## Unverified connector behaviour
