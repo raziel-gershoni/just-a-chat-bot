@@ -68,38 +68,51 @@ export async function getMessage(db: Db, chatId: number, messageId: number): Pro
   return row ?? null;
 }
 
+/** One thread's rows: a null thread is a non-forum chat (every row is null there) or a forum's General. */
+const inThread = (threadId: number | null) =>
+  threadId != null ? eq(messages.threadId, threadId) : isNull(messages.threadId);
+
 /**
- * Ascending history for the prompt; the start seq is fixed for 20 messages at a time. Only the
- * run's thread: a null thread is a non-forum chat (every row is null there) or a forum's General.
+ * Ascending history for the prompt: the thread's last `window` rows, its start seq fixed for 20
+ * messages at a time. The window is counted within the thread, so a quiet topic keeps its
+ * history while other topics are busy.
  */
 export async function windowMessages(
   db: Db,
   p: { chatId: number; threadId: number | null; window: number; after: Date | null },
 ): Promise<StoredMessage[]> {
-  const [top] = await db.select({ seq: max(messages.seq) }).from(messages).where(eq(messages.chatId, p.chatId));
-  const newest = top?.seq ?? 0;
-  if (newest === 0) return [];
-  const startSeq = Math.max(1, Math.floor((newest - p.window) / WINDOW_STEP) * WINDOW_STEP + 1);
+  const scope = and(
+    eq(messages.chatId, p.chatId),
+    inThread(p.threadId),
+    p.after ? gt(messages.date, p.after) : undefined,
+  );
+  // The seq of the thread's window-th newest row; with fewer rows the window starts at the top.
+  const [nth] = await db
+    .select({ seq: messages.seq })
+    .from(messages)
+    .where(scope)
+    .orderBy(desc(messages.seq))
+    .offset(p.window - 1)
+    .limit(1);
+  const startSeq = nth ? Math.floor((nth.seq - 1) / WINDOW_STEP) * WINDOW_STEP + 1 : 1;
   return db
     .select()
     .from(messages)
-    .where(
-      and(
-        eq(messages.chatId, p.chatId),
-        gte(messages.seq, startSeq),
-        p.threadId != null ? eq(messages.threadId, p.threadId) : isNull(messages.threadId),
-        p.after ? gt(messages.date, p.after) : undefined,
-      ),
-    )
+    .where(and(scope, gte(messages.seq, startSeq)))
     .orderBy(asc(messages.seq));
 }
 
-/** The newest `limit` messages, ascending. */
-export async function recentMessages(db: Db, chatId: number, limit: number): Promise<StoredMessage[]> {
+/** The newest `limit` messages of the chat, or of one thread when given, ascending. */
+export async function recentMessages(
+  db: Db,
+  chatId: number,
+  limit: number,
+  only?: { threadId: number | null },
+): Promise<StoredMessage[]> {
   const rows = await db
     .select()
     .from(messages)
-    .where(eq(messages.chatId, chatId))
+    .where(and(eq(messages.chatId, chatId), only ? inThread(only.threadId) : undefined))
     .orderBy(desc(messages.seq))
     .limit(limit);
   return rows.reverse();
@@ -118,6 +131,17 @@ export async function setAnthropicFileId(db: Db, chatId: number, messageId: numb
     .update(messages)
     .set({ anthropicFileId: fileId })
     .where(and(eq(messages.chatId, chatId), eq(messages.messageId, messageId)));
+}
+
+/**
+ * Move a chat's messages to a new chat id (a basic group became a supergroup), negating their
+ * ids: the supergroup numbers its own messages from 1, so the old ids would clash with new ones.
+ */
+export async function moveChatMessages(db: Db, oldId: number, newId: number): Promise<void> {
+  await db
+    .update(messages)
+    .set({ chatId: newId, messageId: sql`-${messages.messageId}`, replyToId: sql`-${messages.replyToId}` })
+    .where(eq(messages.chatId, oldId));
 }
 
 /** Delete every stored message of a chat; returns the uploaded file ids to clean up. */

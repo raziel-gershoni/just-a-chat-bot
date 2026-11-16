@@ -176,6 +176,32 @@ export async function pruneRuns(db: Db, olderThan: Date): Promise<void> {
   await db.delete(runs).where(and(inArray(runs.status, [...FINISHED]), lt(runs.updatedAt, olderThan)));
 }
 
+/**
+ * Move a chat's runs to a new chat id (a basic group became a supergroup): unfinished ones finish
+ * there, and "forget" in the new chat reaches the finished ones. The old chat's message ids they
+ * hold are negated, like the moved messages (moveChatMessages). A held lease is handed to a
+ * placeholder owner: the process still working on the run can't checkpoint its old-chat ids over
+ * the negated ones (it gets LeaseLost and stops; its sends to the old chat fail anyway), and
+ * nobody claims the run until that lease runs out, so it is never worked twice at once. It then
+ * resumes under the new id from its last checkpoint.
+ */
+export async function moveChatRuns(db: Db, oldId: number, newId: number): Promise<void> {
+  await db
+    .update(runs)
+    .set({
+      chatId: newId,
+      trigger: sql`${runs.trigger} || jsonb_build_object(
+        'messageId', -((${runs.trigger}->>'messageId')::bigint),
+        'targetMessageId', -((${runs.trigger}->>'targetMessageId')::bigint))`,
+      sent: sql`jsonb_set(${runs.sent}, '{answerIds}', coalesce(
+        (select jsonb_agg(-(a.id::bigint) order by a.n)
+           from jsonb_array_elements_text(${runs.sent}->'answerIds') with ordinality as a(id, n)),
+        '[]'::jsonb))`,
+      leaseOwner: sql`case when ${runs.leaseOwner} is null then null else 'chat-migrated' end`,
+    })
+    .where(eq(runs.chatId, oldId));
+}
+
 export async function deleteChatRuns(db: Db, chatId: number): Promise<void> {
   await db.delete(runs).where(and(eq(runs.chatId, chatId), inArray(runs.status, [...FINISHED])));
 }

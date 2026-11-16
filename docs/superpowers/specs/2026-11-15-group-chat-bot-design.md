@@ -147,7 +147,7 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
 - **Owner leaves:** if the owner later leaves (seen through `chat_member` updates, which the bot gets as an admin), the bot leaves and deactivates the group.
 - **Not an admin:** if the bot was added without admin rights, it posts a one-time localized hint ("make me an admin so I can see reactions") and works in reduced mode until promoted.
 - Private chats get the "groups only" reply. Messages from other bots are ignored.
-- **Supergroup migration** (`migrate_to_chat_id`) moves the group's row and messages to the new id.
+- **Supergroup migration** (`migrate_to_chat_id`, e.g. when topics are switched on) moves the group's row, its messages and its runs to the new id. The supergroup numbers its messages from 1, so moved message ids (and the ids the runs hold) are negated and never clash with new ones; a reply to a negated id is sent without the reply. The new chat's `migrate_from_chat_id` message is ignored (only `migrate_to` moves the group). A run in progress is released to finish in the new chat. If an update from the new chat created a group row first, the old row replaces it and keeps its token as an alternate, so every posted settings link keeps working.
 
 ### 6.3 Ingestion (webhook)
 - Verifies `X-Telegram-Bot-Api-Secret-Token` and is idempotent on `update_id`. Telegram redelivers on failure, and during a deploy overlap either instance may receive an update.
@@ -168,7 +168,7 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
 
 ### 6.4 Auto-chime
 - **Debounce:** each new human message (when auto-chime is on and nothing else triggered) resets a **30 s in-memory timer** for that chat, so a burst of messages costs one check.
-- **Skips:** the check is skipped while a run is active or within the **10-min cooldown** after the bot last spoke. Chime and cooldown are **per chat**, not per topic.
+- **Skips:** the check is skipped while a run is active or within the **10-min cooldown** after the bot last spoke. Chime and cooldown are **per chat**, not per topic. In groups with topics, the classifier reads only the topic of the newest message, which is where the chime would answer.
 - **Restarts:** a timer lost in a restart is acceptable; the next message re-arms it.
 - **The check:**
   - Haiku 5.5, effort `low`, structured JSON output `{ chime: boolean, reason: string }`.
@@ -180,7 +180,7 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
 - Every decision is logged with its reason.
 
 ### 6.5 Building the conversation for a reply run
-- **Window:** the last `historyWindow` messages after the group's "forget" cutoff (default 100; options 50 / 100 / 200 / 400). In groups with topics, only the trigger's thread.
+- **Window:** the last `historyWindow` messages after the group's "forget" cutoff (default 100; options 50 / 100 / 200 / 400). In groups with topics, only the trigger's thread, and the window counts that thread's own messages (a quiet topic keeps its history while others are busy).
 - **Turn structure:**
   - Consecutive human messages are merged into one `user` turn, each attributed as `<msg id="…" from="Name" at="HH:MM">…</msg>` (Israel local time).
   - Bot replies become `assistant` text turns.

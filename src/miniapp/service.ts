@@ -101,8 +101,16 @@ export async function updateSettings(deps: MiniDeps, claims: SessionClaims, patc
   return { ok: true, view: await buildView(deps, { ...group, settings: next }, claims) };
 }
 
-/** Wipes the group's stored messages, uploaded files and finished runs; messages before now are never read again. */
-export async function forgetHistory(deps: MiniDeps, claims: SessionClaims): Promise<void> {
+/**
+ * Wipes the group's stored messages, uploaded files and finished runs; messages before now are
+ * never read again. unknown_group when the group is gone or deactivated since the session was
+ * issued (e.g. it became a supergroup with a new chat id), so nothing pretends to be forgotten.
+ */
+export async function forgetHistory(deps: MiniDeps, claims: SessionClaims): Promise<{ ok: true } | ApiFailure> {
+  if (!(await activeGroup(deps, claims.chatId))) {
+    log("miniapp.forget_unknown_group", { chat_id: claims.chatId, by: claims.userId });
+    return { ok: false, status: 404, error: "unknown_group" };
+  }
   const fileIds = await deleteChatMessages(deps.db, claims.chatId);
   for (const id of fileIds) {
     // Best effort: a failed delete only leaves an orphan file on Anthropic's side.
@@ -111,4 +119,5 @@ export async function forgetHistory(deps: MiniDeps, claims: SessionClaims): Prom
   await deleteChatRuns(deps.db, claims.chatId);
   await setForgetBefore(deps.db, claims.chatId, deps.now());
   log("settings.forget", { chat_id: claims.chatId, by: claims.userId });
+  return { ok: true };
 }

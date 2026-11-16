@@ -151,6 +151,19 @@ describe("createChimeScheduler", () => {
     expect(logged("chime.skip")[0]).toMatchObject({ reason: "classifier_failed" });
   });
 
+  it("in a forum, judges only the topic of the newest message, the one the chime would answer in", async () => {
+    const { db, llm, t, runs, s } = await setup([YES]);
+    await add(db, 1, { threadId: 7, text: "how long should rye proof?" });
+    await add(db, 2, { threadId: 9, text: "see you at 6" });
+    await add(db, 3, { threadId: 9, text: "ok" });
+    s.onHumanMessage(1);
+    await t.fire();
+    const body = JSON.stringify(llm.classifyCalls[0]!.messages);
+    expect(body).toContain("see you at 6");
+    expect(body).not.toContain("rye");
+    expect(runs.map(([, tr]) => tr.targetMessageId)).toEqual([3]);
+  });
+
   it("only sends messages after forgetBefore, and bakery only when enabled and configured", async () => {
     const { db, llm, t, s } = await setup([NO, NO], { bakery: true });
     await add(db, 1, { text: "old secret" });

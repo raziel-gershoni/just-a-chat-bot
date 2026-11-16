@@ -68,6 +68,9 @@ export type RunStatus = "queued" | "running" | "done" | "failed";
 export const groups = pgTable("groups", {
   chatId: big("chat_id").primaryKey(),
   token: text("token").notNull().unique(),
+  // The token of a row that migrateChat replaced (an update from the new supergroup was handled
+  // before the move): settings links posted with it keep working.
+  altToken: text("alt_token"),
   title: text("title").notNull(),
   active: boolean("active").notNull().default(true),
   // GroupSettings (Task 3) is validated at the edges; stored as plain JSON here.

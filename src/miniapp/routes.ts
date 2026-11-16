@@ -60,7 +60,7 @@ export function handleForget(req: Request, deps: MiniDeps): Promise<Response> {
   return guarded("miniapp.forget_failed", async () => {
     const claims = await claimsFromRequest(req, deps.env.JWT_SECRET);
     if (!claims) return fail(401, "invalid");
-    await forgetHistory(deps, claims);
-    return Response.json({ ok: true });
+    const r = await forgetHistory(deps, claims);
+    return r.ok ? Response.json({ ok: true }) : fail(r.status, r.error);
   });
 }

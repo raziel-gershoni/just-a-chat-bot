@@ -15,6 +15,13 @@
       "when": 1794843901108,
       "tag": "0001_user_trigger_dedupe",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794856803512,
+      "tag": "0002_group_alt_token",
+      "breakpoints": true
     }
   ]
 }

@@ -462,6 +462,16 @@ async function onError(ctx: Ctx, err: unknown): Promise<void> {
   const status = httpStatus(err);
   const attempts = ctx.run.attempts;
   log("run.error", { ...ids(ctx), status, attempts, error: errorText(err) });
+  // The group became a supergroup (e.g. topics were switched on) while this run worked: the
+  // webhook's migrateChat moves the run to the new chat id, where it is claimed again and sends
+  // only what is still missing. Not a failure, so no apology to the old chat. Claims are still
+  // capped (drive's claims_exhausted check).
+  const migratedTo = err instanceof GrammyError ? err.parameters?.migrate_to_chat_id : undefined;
+  if (migratedTo !== undefined) {
+    log("run.chat_migrated", { ...ids(ctx), migrate_to_chat_id: migratedTo });
+    await releaseLease(ctx.deps.db, ctx.run.id, ctx.deps.owner);
+    return;
+  }
   if (status !== null && status >= 400 && status < 500 && !RETRYABLE_4XX.has(status)) {
     return fail(ctx, `http_${status}: ${errorText(err)}`);
   }

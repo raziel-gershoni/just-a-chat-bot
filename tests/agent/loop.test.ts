@@ -561,6 +561,25 @@ describe("processRun", () => {
     expect(bodies).not.toContain(t("en", "runFailed"));
   });
 
+  it("a send refused because the group became a supergroup releases the run for the new chat, no apology", async () => {
+    const { db, run } = await setup();
+    const llm = fakeLlm([reply([text("hello")])]);
+    const tg = fakeTg();
+    tg.sendMessage = (async () => {
+      throw new GrammyError(
+        "upgraded",
+        { ok: false, error_code: 400, description: "Bad Request: group chat was upgraded to a supergroup chat", parameters: { migrate_to_chat_id: -1001 } },
+        "sendMessage",
+        {},
+      );
+    }) as FakeTg["sendMessage"];
+    await processRun(run, deps(db, { llm, tg }));
+    const row = await readRun(db, run.id);
+    expect([row.status, row.leaseOwner]).toEqual(["running", null]);
+    expect(logged("run.chat_migrated")[0]).toMatchObject({ migrate_to_chat_id: -1001 });
+    expect(logged("run.failed")).toHaveLength(0);
+  });
+
   it("the sources message fails: the retry sends only it, the last part is not repeated", async () => {
     const { db, run } = await setup();
     const sources = [1, 2, 3, 4, 5].map((n) => cite(`https://example.com/${n}/${"p".repeat(200)}`, `Source ${n} ${"t".repeat(100)}`));

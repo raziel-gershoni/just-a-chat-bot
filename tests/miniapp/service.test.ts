@@ -112,7 +112,7 @@ describe("forgetHistory", () => {
     const running = (await createRun(deps.db, { chatId: -100, threadId: null, trigger: { ...trig, type: "reply" } }))!;
     await claimNextRun(deps.db, -100, "o", 120_000, NOW);
 
-    await forgetHistory(deps, member);
+    expect(await forgetHistory(deps, member)).toEqual({ ok: true });
 
     expect(await recentMessages(deps.db, -100, 10)).toEqual([]);
     expect(llm.deleted).toEqual(["file_x"]);
@@ -120,6 +120,11 @@ describe("forgetHistory", () => {
     const { runs } = await import("@/src/db/schema");
     const rows = await deps.db.select().from(runs);
     expect(rows.map((r) => r.id)).toEqual([running.id]);
+  });
+  it("a session for a chat that is gone (e.g. it became a supergroup) gets unknown_group, not a silent ok", async () => {
+    await insertMessage(deps.db, msg(-100, 1));
+    expect(await forgetHistory(deps, { ...member, chatId: -999 })).toEqual({ ok: false, status: 404, error: "unknown_group" });
+    expect(await recentMessages(deps.db, -100, 10)).toHaveLength(1);
   });
   it("a failed file delete is logged and does not abort", async () => {
     await insertMessage(deps.db, msg(-100, 1));

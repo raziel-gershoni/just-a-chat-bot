@@ -89,8 +89,19 @@ async function onMessage(msg: Message, deps: BotDeps): Promise<void> {
   if (!isGroupChat(chat.type)) return ignored("chat_type", { chat_id: chat.id, type: chat.type });
 
   if (msg.migrate_to_chat_id !== undefined) {
-    await migrateChat(deps.db, chat.id, msg.migrate_to_chat_id);
+    const r = await migrateChat(deps.db, chat.id, msg.migrate_to_chat_id);
+    log("bot.chat_migrated", {
+      chat_id: chat.id,
+      to_chat_id: msg.migrate_to_chat_id,
+      moved_group: r.movedGroup,
+      replaced_new_row: r.replacedNewRow,
+    });
     return;
+  }
+  // The new chat's side of the same switch, sent at the same moment. Only migrate_to moves the
+  // group: handled here first, ensureGroup would create a second group row and welcome.
+  if (msg.migrate_from_chat_id !== undefined) {
+    return ignored("migrate_from", { chat_id: chat.id, from_chat_id: msg.migrate_from_chat_id });
   }
   // Anonymous admins and channel posts arrive as a fake bot user plus sender_chat: keep those.
   if (msg.from?.is_bot && !msg.sender_chat) return ignored("from_bot", { chat_id: chat.id });

@@ -67,10 +67,12 @@ export function createChimeScheduler(deps: ChimeSchedulerDeps): { onHumanMessage
     const before = await blocked(chatId);
     if (before) return skip(chatId, before);
 
-    const recent = await recentMessages(db, chatId, CHIME_INPUT_MESSAGES);
-    const latest = recent[recent.length - 1];
+    const [latest] = await recentMessages(db, chatId, 1);
     if (!latest) return skip(chatId, "no_messages");
     if (latest.isBot) return skip(chatId, "last_is_bot");
+    // The chime answers in the newest message's topic (its run's history is that topic only),
+    // so the classifier judges that topic alone. Debounce and cooldown stay per chat.
+    const recent = await recentMessages(db, chatId, CHIME_INPUT_MESSAGES, { threadId: latest.threadId });
     const rows = group.forgetBefore ? recent.filter((r) => r.date > group.forgetBefore!) : recent;
     const last = rows[rows.length - 1];
     if (!last) return skip(chatId, "no_messages");

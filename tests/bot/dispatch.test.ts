@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import { eq } from "drizzle-orm";
 import { GrammyError } from "grammy";
 import { handleUpdate, type BotDeps } from "@/src/bot/dispatch";
-import { getGroup } from "@/src/db/repo/groups";
+import { getGroup, getGroupByToken } from "@/src/db/repo/groups";
 import { getMessage } from "@/src/db/repo/messages";
 import { groups, messages, runs } from "@/src/db/schema";
 import { t } from "@/src/i18n";
@@ -270,12 +270,50 @@ describe("message", () => {
     expect(String(sent()[0]!.args[1])).toMatch(/[а-я]/);
   });
 
-  it("migrate_to_chat_id moves the rows", async () => {
+  it("migrate_to_chat_id moves the rows (message ids negated)", async () => {
     await handleUpdate(msgUpdate(groupMsg(-100, 1)), deps);
     await handleUpdate(msgUpdate(groupMsg(-100, 2, { text: undefined, migrate_to_chat_id: -1000 })), deps);
     expect(await getGroup(db, -1000)).not.toBeNull();
-    expect(await getMessage(db, -1000, 1)).not.toBeNull();
+    expect(await getMessage(db, -1000, -1)).not.toBeNull();
     expect(await getGroup(db, -100)).toBeNull();
+    expect(logged("bot.chat_migrated")).toEqual([
+      expect.objectContaining({ chat_id: -100, to_chat_id: -1000, moved_group: true, replaced_new_row: false }),
+    ]);
+  });
+
+  it("after the switch to a supergroup, a mention reusing an old message id is stored and answered", async () => {
+    await handleUpdate(mention(-100, 3, { text: "yo @MyBot old question" }), deps);
+    await handleUpdate(msgUpdate(groupMsg(-100, 4, { text: undefined, migrate_to_chat_id: -1000 })), deps);
+    enqueue.mockClear();
+    await handleUpdate(mention(-1000, 3, { chat: { id: -1000, type: "supergroup", title: "G" }, text: "yo @MyBot new question" }), deps);
+    expect((await getMessage(db, -1000, 3))?.text).toBe("yo @MyBot new question");
+    expect(enqueue).toHaveBeenCalledWith(-1000, 0);
+    const fresh = (await allRuns()).filter((r) => r.chatId === -1000 && r.trigger.messageId === 3);
+    expect(fresh).toHaveLength(1);
+  });
+
+  it("a bot-join update for the new supergroup handled before migrate_to: its welcome's settings link still works", async () => {
+    await handleUpdate(msgUpdate(groupMsg(-100, 1)), deps);
+    await handleUpdate(myChatMember(-1000, "left", "administrator", user(10)), deps);
+    const url = (sent().at(-1)!.args[2] as { reply_markup: { inline_keyboard: { url: string }[][] } }).reply_markup.inline_keyboard[0]![0]!.url;
+    const token = new URL(url).searchParams.get("startapp")!;
+    await handleUpdate(msgUpdate(groupMsg(-100, 2, { text: undefined, migrate_to_chat_id: -1000 })), deps);
+    expect((await getGroupByToken(db, token))?.chatId).toBe(-1000);
+  });
+
+  it("migrate_from in the new chat, handled before migrate_to, leaves the move to migrate_to", async () => {
+    await handleUpdate(msgUpdate(groupMsg(-100, 1)), deps);
+    const token = (await getGroup(db, -100))!.token;
+    const before = sent().length;
+    await handleUpdate(
+      msgUpdate(groupMsg(-1000, 1, { chat: { id: -1000, type: "supergroup", title: "G" }, text: undefined, migrate_from_chat_id: -100 })),
+      deps,
+    );
+    expect(sent()).toHaveLength(before); // no second welcome
+    expect(await getGroup(db, -1000)).toBeNull();
+    expect(logged("bot.ignored").filter((l) => l.reason === "migrate_from")).toHaveLength(1);
+    await handleUpdate(msgUpdate(groupMsg(-100, 2, { text: undefined, migrate_to_chat_id: -1000 })), deps);
+    expect((await getGroup(db, -1000))?.token).toBe(token);
   });
 });
 

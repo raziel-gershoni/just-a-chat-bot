@@ -1,0 +1,1 @@
+ALTER TABLE "groups" ADD COLUMN "alt_token" text;

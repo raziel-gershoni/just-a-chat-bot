@@ -127,11 +127,13 @@ export function sourcesBlock(label: string, sources: { url: string; title: strin
 
 type ReplyOpts = { replyTo?: number; threadId?: number | null };
 
-// Telegram parameters shared by every send: the thread, and (first part only) the reply.
+// Telegram parameters shared by every send: the thread, and (first part only) the reply. An id
+// below 1 is a message moved from a basic group that became a supergroup (stored negated,
+// see migrateChat): it doesn't exist in this chat, so the message goes without the reply.
 function baseParams(opts: ReplyOpts, withReply: boolean) {
   return {
     ...(opts.threadId != null ? { message_thread_id: opts.threadId } : {}),
-    ...(withReply && opts.replyTo != null
+    ...(withReply && opts.replyTo != null && opts.replyTo > 0
       ? { reply_parameters: { message_id: opts.replyTo, allow_sending_without_reply: true } }
       : {}),
   };

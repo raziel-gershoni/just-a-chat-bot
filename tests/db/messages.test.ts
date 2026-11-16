@@ -74,6 +74,23 @@ test("window filters by thread and after", async () => {
   expect(after.map((m) => m.seq)).toEqual([26, 28, 30]);
 });
 
+test("a quiet topic keeps its own window while another topic is busy", async () => {
+  // Topic 7 talks first (seq 1-10), then topic 9 gets 110 messages.
+  const db = await fill(120, (i) => ({ threadId: i <= 10 ? 7 : 9 }));
+  expect((await win(db, { threadId: 7 })).map((m) => m.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  // A topic's window is its own last `window` rows, its start stepped by 20: topic 9's 50th
+  // newest row is seq 71, so the window starts at 61.
+  const busy = await win(db, { threadId: 9, window: 50 });
+  expect([busy[0]?.seq, busy.at(-1)?.seq, busy.length]).toEqual([61, 120, 60]);
+});
+
+test("recentMessages reads the whole chat, or one thread", async () => {
+  const db = await fill(6, (i) => ({ threadId: i % 2 === 0 ? 7 : null }));
+  expect((await recentMessages(db, 1, 2)).map((m) => m.messageId)).toEqual([5, 6]);
+  expect((await recentMessages(db, 1, 2, { threadId: 7 })).map((m) => m.messageId)).toEqual([4, 6]);
+  expect((await recentMessages(db, 1, 2, { threadId: null })).map((m) => m.messageId)).toEqual([3, 5]);
+});
+
 test("recentMessages, lastBotMessageAt, getMessage, updateMessageText", async () => {
   const db = await fill(5, (i) => ({ isBot: i === 3 }));
   expect((await recentMessages(db, 1, 2)).map((m) => m.messageId)).toEqual([4, 5]);

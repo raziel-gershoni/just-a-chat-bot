@@ -21,6 +21,13 @@ describe("sendAnswer", () => {
     for (const m of msgs) expect(m.text.length).toBeLessThanOrEqual(4096);
   });
 
+  it("sends without the reply when the target is a message moved from a basic group (negated id)", async () => {
+    const tg = fakeTg();
+    await sendAnswer(tg, -100, "hi", { replyTo: -42, threadId: null });
+    await sendText(tg, -100, "card", { replyTo: -42 });
+    expect(sent(tg).map((m) => m.extra.reply_parameters)).toEqual([undefined, undefined]);
+  });
+
   it("appends tailMd2 to the last part when it fits", async () => {
     const tg = fakeTg();
     await sendAnswer(tg, -100, "Short answer", { tailMd2: "\\(tail\\)" });
