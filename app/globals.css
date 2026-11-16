@@ -1,1 +1,112 @@
 @import "tailwindcss";
+
+/* Tokens mirror just-a-list-manager: a grayscale OKLCH palette with one chromatic accent (tg-active).
+   Light/dark follow the device through prefers-color-scheme, so there is no flash and no JS. */
+@theme inline {
+  --color-tg-bg: var(--background);
+  --color-tg-text: var(--foreground);
+  --color-tg-hint: var(--muted-foreground);
+  --color-tg-button: var(--primary);
+  --color-tg-button-text: var(--primary-foreground);
+  --color-tg-secondary-bg: var(--secondary);
+  --color-tg-destructive: var(--destructive);
+  --color-tg-destructive-text: var(--destructive-foreground);
+  --color-tg-active: var(--tg-active);
+  --color-separator: var(--separator);
+  --color-border: var(--border);
+  /* System faces: they carry Hebrew and Cyrillic everywhere and match Telegram's own UI. */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans Hebrew", "Noto Sans", Arial, sans-serif;
+}
+
+:root {
+  color-scheme: light;
+  --background: oklch(0.985 0 0);
+  --foreground: oklch(0.145 0.005 285);
+  --primary: oklch(0.205 0.005 285);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.965 0.003 285);
+  --muted-foreground: oklch(0.5 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.935 0.003 285);
+  --ring: oklch(0.6 0.03 260);
+  --separator: oklch(0 0 0 / 5%);
+  --tg-active: oklch(0.62 0.18 250);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --background: oklch(0.13 0.005 285);
+    --foreground: oklch(0.96 0 0);
+    --primary: oklch(0.9 0 0);
+    --primary-foreground: oklch(0.175 0.005 285);
+    --secondary: oklch(0.22 0.005 285);
+    --muted-foreground: oklch(0.6 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --destructive-foreground: oklch(0.145 0.005 285);
+    --border: oklch(1 0 0 / 8%);
+    --ring: oklch(0.55 0.03 260);
+    --separator: oklch(1 0 0 / 6%);
+    --tg-active: oklch(0.72 0.16 245);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply min-h-dvh bg-tg-bg font-sans text-tg-text;
+    -webkit-tap-highlight-color: transparent;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  button,
+  select {
+    @apply transition-[background-color,color,opacity,scale] duration-150 ease-out;
+  }
+}
+
+@layer utilities {
+  /* Reaction emoji are content: force the colour emoji glyphs (a bare ❤ is a black text glyph otherwise). */
+  .emoji {
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  }
+
+  .skeleton-shimmer {
+    background: linear-gradient(90deg, var(--secondary) 0%, var(--border) 50%, var(--secondary) 100%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
+  }
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* "Saved" stays readable for a moment, then gets out of the way. */
+  .fade-out-late {
+    animation: fade-out 0.4s ease-out 1.6s forwards;
+  }
+  @keyframes fade-out {
+    to { opacity: 0; }
+  }
+
+  /* The forget confirmation answers a tap, so it may move a little. */
+  .reveal {
+    animation: reveal 0.18s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+  @keyframes reveal {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton-shimmer, .reveal { animation: none; }
+  }
+}

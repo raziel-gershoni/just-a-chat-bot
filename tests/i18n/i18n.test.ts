@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { en } from "@/src/i18n/en";
 import { he } from "@/src/i18n/he";
 import { ru } from "@/src/i18n/ru";
-import { fill, pickLang, t } from "@/src/i18n";
+import { fill, LANG_NAMES, pickLang, t } from "@/src/i18n";
 
 describe("pickLang", () => {
   it("maps Telegram language codes", () => {
@@ -26,6 +26,21 @@ describe("catalogs", () => {
     for (const k of ["groupsOnly", "ownerMissingLeaving", "welcome", "settingsButton", "adminHint", "refusal", "cutShort", "runFailed", "sourcesLabel", "bakeryApprove", "bakeryReject", "bakeryUnreachable", "bakeryUnavailableNotice", "noNewerMessages"]) {
       expect(en, k).toHaveProperty(k);
     }
+  });
+  it("has the Mini App keys", () => {
+    const keys = [
+      "miniLoading", "miniSubtitle", "miniErrorInvalid", "miniErrorUnknownGroup", "miniErrorNotMember", "miniErrorFailed",
+      "miniSaving", "miniSaved", "miniSaveFailed", "miniModel", "miniEffort", "miniEffortHint",
+      "miniEffortLow", "miniEffortMedium", "miniEffortHigh", "miniEffortXhigh", "miniEffortMax",
+      "miniChime", "miniChimeSwitch", "miniEagerness", "miniEagernessLow", "miniEagernessMedium", "miniEagernessHigh",
+      "miniTrigger", "miniTriggerHint", "miniLanguage", "miniLanguageHint", "miniMemory", "miniMemoryHint",
+      "miniBakery", "miniBakerySwitch", "miniBakeryHint", "miniBakeryNotConfigured",
+      "miniForget", "miniForgetHint", "miniForgetConfirm", "miniForgetYes", "miniCancel", "miniForgetDone", "miniForgetFailed",
+    ];
+    for (const k of keys) expect(en, k).toHaveProperty(k);
+  });
+  it("names every bot language in its own language", () => {
+    expect(LANG_NAMES).toEqual({ he: "עברית", en: "English", ru: "Русский" });
   });
 });
 

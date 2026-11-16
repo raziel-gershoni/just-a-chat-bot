@@ -2,8 +2,7 @@ import { z } from "zod";
 import { log } from "../util/log";
 import type { Lang } from "../i18n";
 import { REACTION_EMOJIS } from "./emojis";
-
-export const HISTORY_WINDOWS = [50, 100, 200, 400] as const;
+import { HISTORY_WINDOWS } from "./windows";
 
 export const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max"]);
 export const eagernessSchema = z.enum(["low", "medium", "high"]);
