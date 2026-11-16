@@ -1,0 +1,134 @@
+import { and, asc, eq, inArray, isNull, lt, lte, or, gt } from "drizzle-orm";
+import { runs, type RunSent, type RunSnapshot, type RunTrigger } from "../schema";
+import type { Db } from "../types";
+
+export type RunRow = typeof runs.$inferSelect;
+
+const PENDING = ["queued", "running"] as const;
+
+export async function createRun(
+  db: Db,
+  r: { chatId: number; threadId: number | null; trigger: RunTrigger },
+): Promise<RunRow> {
+  const [row] = await db.insert(runs).values(r).returning();
+  return row!;
+}
+
+/**
+ * Lease the OLDEST pending run of the chat, only if its lease is free or expired. A head run
+ * leased by someone else blocks the chat (later runs are never skipped to), so per-chat order
+ * holds across two instances. The head pick and the lease check are one statement.
+ */
+export async function claimNextRun(
+  db: Db,
+  chatId: number,
+  owner: string,
+  leaseMs: number,
+  now: Date,
+): Promise<RunRow | null> {
+  const head = db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(and(eq(runs.chatId, chatId), inArray(runs.status, [...PENDING])))
+    .orderBy(asc(runs.id))
+    .limit(1);
+  const [row] = await db
+    .update(runs)
+    .set({
+      status: "running",
+      leaseOwner: owner,
+      leaseUntil: new Date(now.getTime() + leaseMs),
+      updatedAt: now,
+    })
+    .where(and(inArray(runs.id, head), or(isNull(runs.leaseUntil), lte(runs.leaseUntil, now))))
+    .returning();
+  return row ?? null;
+}
+
+export async function renewLease(db: Db, runId: number, owner: string, leaseMs: number, now: Date): Promise<boolean> {
+  const rows = await db
+    .update(runs)
+    .set({ leaseUntil: new Date(now.getTime() + leaseMs), updatedAt: now })
+    .where(and(eq(runs.id, runId), eq(runs.leaseOwner, owner)))
+    .returning({ id: runs.id });
+  return rows.length > 0;
+}
+
+/** Write progress, but only while we still own the lease (a taken-over run must not be overwritten). */
+export async function saveCheckpoint(
+  db: Db,
+  runId: number,
+  owner: string,
+  patch: { snapshot?: RunSnapshot; steps?: number; sent?: RunSent; attempts?: number },
+): Promise<boolean> {
+  const set: Partial<typeof runs.$inferInsert> = { updatedAt: new Date() };
+  if (patch.snapshot !== undefined) set.snapshot = patch.snapshot;
+  if (patch.steps !== undefined) set.steps = patch.steps;
+  if (patch.sent !== undefined) set.sent = patch.sent;
+  if (patch.attempts !== undefined) set.attempts = patch.attempts;
+  const rows = await db
+    .update(runs)
+    .set(set)
+    .where(and(eq(runs.id, runId), eq(runs.leaseOwner, owner)))
+    .returning({ id: runs.id });
+  return rows.length > 0;
+}
+
+export async function finishRun(
+  db: Db,
+  runId: number,
+  owner: string,
+  status: "done" | "failed",
+  error?: string,
+): Promise<boolean> {
+  const rows = await db
+    .update(runs)
+    .set({ status, error: error ?? null, leaseOwner: null, leaseUntil: null, updatedAt: new Date() })
+    .where(and(eq(runs.id, runId), eq(runs.leaseOwner, owner)))
+    .returning({ id: runs.id });
+  return rows.length > 0;
+}
+
+export async function releaseLease(db: Db, runId: number, owner: string): Promise<void> {
+  await db
+    .update(runs)
+    .set({ leaseOwner: null, leaseUntil: null, updatedAt: new Date() })
+    .where(and(eq(runs.id, runId), eq(runs.leaseOwner, owner)));
+}
+
+/** Chats whose head (oldest pending) run could be claimed right now. */
+export async function chatsWithPendingRuns(db: Db, now: Date): Promise<number[]> {
+  const pending = await db
+    .select({ chatId: runs.chatId, leaseUntil: runs.leaseUntil })
+    .from(runs)
+    .where(inArray(runs.status, [...PENDING]))
+    .orderBy(asc(runs.id));
+  const heads = new Map<number, Date | null>();
+  for (const r of pending) if (!heads.has(r.chatId)) heads.set(r.chatId, r.leaseUntil);
+  return [...heads].filter(([, until]) => !until || until <= now).map(([chatId]) => chatId);
+}
+
+/** A run is queued, or running under a live lease. */
+export async function hasActiveRun(db: Db, chatId: number, now: Date): Promise<boolean> {
+  const rows = await db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.chatId, chatId),
+        or(eq(runs.status, "queued"), and(eq(runs.status, "running"), gt(runs.leaseUntil, now))),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
+const FINISHED = ["done", "failed"] as const;
+
+export async function pruneRuns(db: Db, olderThan: Date): Promise<void> {
+  await db.delete(runs).where(and(inArray(runs.status, [...FINISHED]), lt(runs.updatedAt, olderThan)));
+}
+
+export async function deleteChatRuns(db: Db, chatId: number): Promise<void> {
+  await db.delete(runs).where(and(eq(runs.chatId, chatId), inArray(runs.status, [...FINISHED])));
+}
