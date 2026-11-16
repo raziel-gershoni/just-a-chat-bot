@@ -1,21 +1,13 @@
 import { randomBytes } from "node:crypto";
-import { GrammyError } from "grammy";
 import type { Chat, User } from "grammy/types";
 import { getGroup, setGroupActive, upsertGroup, type Group } from "../db/repo/groups";
 import { pickLang, t, type MsgKey } from "../i18n";
 import { defaultSettings, parseSettings } from "../settings/schema";
+import { isDefiniteRefusal } from "../telegram/client";
 import { sendText } from "../telegram/send";
 import { errorText } from "../util/errors";
 import { log } from "../util/log";
 import type { BotDeps } from "./dispatch";
-
-/**
- * Telegram definitely refused a getChatMember (a 400 such as "user not found", or a 403):
- * the answer is "not a member". A network error, a 429 or a 5xx is transient instead.
- */
-export function isDefiniteRefusal(err: unknown): boolean {
-  return err instanceof GrammyError && (err.error_code === 400 || err.error_code === 403);
-}
 
 /**
  * A transient failure (network, 429, 5xx) throws, so the webhook answers 500 and Telegram

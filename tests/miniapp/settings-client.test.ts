@@ -54,6 +54,8 @@ describe("bootstrap", () => {
       [401, "invalid", "invalid"],
       [400, "invalid", "failed"],
       [500, "internal", "failed"],
+      // Telegram couldn't confirm membership: the page says "try again" (miniErrorFailed).
+      [502, "unavailable", "failed"],
     ] as const) {
       const f = fakeFetch([json(status, { error })]);
       expect(await bootstrap(f.fn, "x"), `${status} ${error}`).toEqual({ ok: false, error: expected });

@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { GrammyError } from "grammy";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createSession } from "@/src/miniapp/auth";
 import { signSession, verifySession } from "@/src/miniapp/jwt";
@@ -75,8 +76,18 @@ describe("createSession", () => {
   it("a user who left -> not_member (403)", async () => {
     expect(await createSession(deps, sign(11, "tok_a"))).toEqual({ error: "not_member", status: 403 });
   });
-  it("a failing membership check -> not_member and is logged", async () => {
-    tg.getChatMember = async () => { throw new Error("boom"); };
+  it("a definite refusal of the membership check (400 user not found) -> not_member (403)", async () => {
+    tg.getChatMember = async () => { throw new GrammyError("x", { ok: false, error_code: 400, description: "Bad Request: user not found" }, "getChatMember", {}); };
     expect(await createSession(deps, sign(10, "tok_a"))).toEqual({ error: "not_member", status: 403 });
+  });
+  it("a transient membership-check failure (network, 429, 5xx) -> unavailable (502), never a session", async () => {
+    for (const err of [
+      new Error("socket hang up"),
+      new GrammyError("x", { ok: false, error_code: 429, description: "Too Many Requests" }, "getChatMember", {}),
+      new GrammyError("x", { ok: false, error_code: 500, description: "Internal Server Error" }, "getChatMember", {}),
+    ]) {
+      tg.getChatMember = async () => { throw err; };
+      expect(await createSession(deps, sign(10, "tok_a"))).toEqual({ error: "unavailable", status: 502 });
+    }
   });
 });

@@ -1,23 +1,31 @@
 import { getGroupByToken } from "../db/repo/groups";
 import { pickLang } from "../i18n";
+import { isDefiniteRefusal } from "../telegram/client";
 import { verifyInitData } from "../telegram/initdata";
 import { errorText } from "../util/errors";
 import { log } from "../util/log";
 import { signSession, verifySession, type SessionClaims } from "./jwt";
 import type { MiniDeps } from "./service";
 
-export type SessionError = { error: "invalid" | "unknown_group" | "not_member"; status: 401 | 404 | 403 };
+export type SessionError =
+  | { error: "invalid"; status: 401 }
+  | { error: "unknown_group"; status: 404 }
+  | { error: "not_member"; status: 403 }
+  /** Telegram couldn't answer the membership check right now; the page shows "try again". */
+  | { error: "unavailable"; status: 502 };
 export type SessionOk = { token: string; groupTitle: string; isOwner: boolean; lang: SessionClaims["lang"] };
 
-async function isMember(deps: MiniDeps, chatId: number, userId: number): Promise<boolean> {
+// "unavailable" when Telegram couldn't answer (network, 429, 5xx): no session either way, so
+// strangers never get in, but a real member is told to try again, not that they aren't one.
+async function membership(deps: MiniDeps, chatId: number, userId: number): Promise<"member" | "not_member" | "unavailable"> {
   try {
     const m = await deps.tg.getChatMember(chatId, userId);
-    if (m.status === "creator" || m.status === "administrator" || m.status === "member") return true;
-    return m.status === "restricted" && m.is_member;
+    if (m.status === "creator" || m.status === "administrator" || m.status === "member") return "member";
+    return m.status === "restricted" && m.is_member ? "member" : "not_member";
   } catch (err) {
-    // An unanswerable check counts as "not a member": strangers must not get in.
-    log("miniapp.member_check_failed", { chat_id: chatId, user_id: userId, error: errorText(err) });
-    return false;
+    const definite = isDefiniteRefusal(err);
+    log("miniapp.member_check_failed", { chat_id: chatId, user_id: userId, definite, error: errorText(err) });
+    return definite ? "not_member" : "unavailable";
   }
 }
 
@@ -33,7 +41,9 @@ export async function createSession(deps: MiniDeps, initData: string): Promise<S
     log("miniapp.session_unknown_group", { user_id: data.user.id });
     return { error: "unknown_group", status: 404 };
   }
-  if (!(await isMember(deps, group.chatId, data.user.id))) {
+  const member = await membership(deps, group.chatId, data.user.id);
+  if (member === "unavailable") return { error: "unavailable", status: 502 };
+  if (member === "not_member") {
     log("miniapp.session_not_member", { chat_id: group.chatId, user_id: data.user.id });
     return { error: "not_member", status: 403 };
   }

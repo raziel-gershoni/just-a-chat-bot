@@ -7,7 +7,7 @@
 // - a wait longer than 10 s isn't waited for (the call throws, and the run's own attempt
 //   counter takes over).
 // A network error is NOT retried here: the plugin would retry it without any bound.
-import { Bot, type ApiClientOptions } from "grammy";
+import { Bot, GrammyError, type ApiClientOptions } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
 
 export const TELEGRAM_MAX_RETRIES = 2;
@@ -21,6 +21,15 @@ export function telegramBot(token: string, client?: ApiClientOptions): Bot {
     rethrowHttpErrors: true,
   }));
   return bot;
+}
+
+/**
+ * Telegram definitely refused a call such as getChatMember (a 400 like "user not found", or a
+ * 403): for a membership check the answer is "not a member". A network error, a 429 or a 5xx
+ * is transient instead and must not be read as "no".
+ */
+export function isDefiniteRefusal(err: unknown): boolean {
+  return err instanceof GrammyError && (err.error_code === 400 || err.error_code === 403);
 }
 
 // Where a file that getFile returned can be downloaded from.

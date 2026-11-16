@@ -41,7 +41,11 @@ describe("handleBakeryCallback", () => {
     expect(tg.calls).toEqual([{ method: "answerCallbackQuery", args: ["cb1", { text: "רק הבעלים", show_alert: true }] }]);
   });
 
-  it.each<[string, DecisionResult]>([["401 without outcome", { status: 401 }], ["network error", { status: 0 }]])(
+  it.each<[string, DecisionResult]>([
+    ["401 without outcome", { status: 401 }],
+    ["network error", { status: 0 }],
+    ["401 that carries an outcome body", { status: 401, outcome: "failed", message: "unauthorized" }],
+  ])(
     "%s: unreachable alert, buttons kept", async (_n, res) => {
       const tg = fakeTg();
       await handleBakeryCallback(query("mcp:approve:12"), { tg, bakery: fakeBakery(res), lang });

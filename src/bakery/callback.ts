@@ -44,7 +44,10 @@ export async function handleBakeryCallback(
     }
   };
 
-  if (result.outcome && result.message) {
+  // A 401 (key wrong or replaced) or a network failure (status 0) keeps the buttons and shows
+  // the "unreachable" alert, whatever body came with it.
+  const unreachable = result.status === 401 || result.status === 0;
+  if (!unreachable && result.outcome && result.message) {
     const notOwner = result.outcome === "not_owner";
     await answer(truncate200(result.message), notOwner);
     if (notOwner || !card) return true;
