@@ -10,7 +10,7 @@ One always-on Next.js 16 server on Railway, Neon Postgres, no queue service. Des
    - `/newbot`, keep the token.
    - `/setprivacy` -> Disable (the bot must see all group messages).
    - `/setjoingroups` -> Enable.
-   - `/newapp` for the Mini App with short name `settings` (URL: `https://<your-railway-domain>/settings`).
+   - `/newapp` for the Mini App with short name `settings` (URL: `https://<your-railway-domain>`; `/settings` works too).
 2. **Neon**: create a project and copy the pooled connection string (`DATABASE_URL`).
 3. **Railway**
    - Create a project and a service linked to this GitHub repo (branch `main`), then generate a public domain.

@@ -4,7 +4,7 @@ Claude-powered Telegram group bot on Railway. Spec: `docs/superpowers/specs/2026
 
 ## Architecture map
 - `app/api/telegram` webhook: verifies the secret, handles the update (stores the message, creates `runs` rows), and only then marks its `update_id` seen. Handling is idempotent: a message row is stored once, and a user trigger (mention, reply, first trigger-emoji reaction per message) has at most one run (partial unique index on `runs (chat_id, trigger->>'type', trigger->>'messageId')`, chime excluded, `ON CONFLICT DO NOTHING`). A failed handle answers 500 and stays unmarked, so Telegram's redelivery is handled again; a failed mark after a good handle is logged and still answers 200. Shutdown waits for in-flight handlers.
-- `app/api/health`, `app/api/miniapp/{session,settings,forget}`, `app/settings` Mini App (Tailwind 4, lucide-react).
+- `app/api/health`, `app/api/miniapp/{session,settings,forget}`, `app/settings` Mini App (Tailwind 4, lucide-react), also served at `/` so either BotFather URL works.
 - `instrumentation.ts` -> `src/server/startup.ts`: set webhook, deploy-ping, run recovery, sweeper. `src/server/shutdown.ts` drains on SIGTERM (`NEXT_MANUAL_SIG_HANDLE=true`).
 - `src/bot/*` dispatch, access control, ingestion, triggers, private chat.
 - `src/agent/*` request building, prompts, checkpointed agent loop, per-chat runner with a DB lease. Run attempts are counted atomically at claim time (`claimNextRun`), so a run that crashes its process still runs out; a claim past 3 fails the run with the apology, and `onError` only picks fail vs backoff. Answer parts are checkpointed one by one (`sent.answerIds`, `sent.partsSent`), so a retry sends only the parts not yet delivered.
