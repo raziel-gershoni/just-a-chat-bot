@@ -1,11 +1,11 @@
 import { jwtVerify, SignJWT } from "jose";
 import type { Lang } from "../i18n";
 import { errorText } from "../util/errors";
+import { languageSchema } from "../settings/schema";
 import { log } from "../util/log";
 
 export type SessionClaims = { userId: number; chatId: number; owner: boolean; lang: Lang };
 
-const LANGS: readonly string[] = ["he", "en", "ru"];
 
 function key(secret: string): Uint8Array {
   return new TextEncoder().encode(secret);
@@ -27,7 +27,7 @@ export async function verifySession(token: string, secret: string): Promise<Sess
     const { userId, chatId, owner, lang } = payload;
     if (
       typeof userId !== "number" || typeof chatId !== "number" || typeof owner !== "boolean" ||
-      typeof lang !== "string" || !LANGS.includes(lang)
+      typeof lang !== "string" || !languageSchema.safeParse(lang).success
     ) {
       log("miniapp.jwt_bad_claims");
       return null;

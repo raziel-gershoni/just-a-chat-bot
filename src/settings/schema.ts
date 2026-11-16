@@ -5,16 +5,31 @@ import { REACTION_EMOJIS } from "./emojis";
 
 export const HISTORY_WINDOWS = [50, 100, 200, 400] as const;
 
-const effort = z.enum(["low", "medium", "high", "xhigh", "max"]);
-const eagerness = z.enum(["low", "medium", "high"]);
-const language = z.enum(["he", "en", "ru"]);
-const historyWindow = z.number().refine((n) => (HISTORY_WINDOWS as readonly number[]).includes(n));
-const triggerEmoji = z.string().refine((e) => REACTION_EMOJIS.includes(e));
+export const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max"]);
+export const eagernessSchema = z.enum(["low", "medium", "high"]);
+export const languageSchema = z.enum(["he", "en", "ru"]);
+export const historyWindowSchema = z.number().refine((n) => (HISTORY_WINDOWS as readonly number[]).includes(n));
+export const triggerEmojiSchema = z.string().refine((e) => REACTION_EMOJIS.includes(e));
+export const chimeSchema = z.strictObject({ enabled: z.boolean(), eagerness: eagernessSchema });
+
+/** The single definition of a valid settings blob. parseSettings and the Mini App PUT both derive from it. */
+export const settingsSchema = z.strictObject({
+  model: z.string().min(1),
+  effort: effortSchema,
+  chime: chimeSchema,
+  triggerEmoji: triggerEmojiSchema,
+  historyWindow: historyWindowSchema,
+  language: languageSchema,
+  bakery: z.boolean(),
+});
+
+/** A partial update: every field optional, chime's fields optional too. */
+export const settingsPatchSchema = settingsSchema.extend({ chime: chimeSchema.partial() }).partial();
 
 export type GroupSettings = {
   model: string;
-  effort: z.infer<typeof effort>;
-  chime: { enabled: boolean; eagerness: z.infer<typeof eagerness> };
+  effort: z.infer<typeof effortSchema>;
+  chime: { enabled: boolean; eagerness: z.infer<typeof eagernessSchema> };
   triggerEmoji: string;
   historyWindow: number;
   language: Lang;
@@ -57,15 +72,15 @@ export function parseSettings(raw: unknown): GroupSettings {
     log("settings.invalid_field", { field: "chime", issue: "not an object" });
   }
   return {
-    model: field("model", z.string().min(1), r.model, d.model),
-    effort: field("effort", effort, r.effort, d.effort),
+    model: field("model", settingsSchema.shape.model, r.model, d.model),
+    effort: field("effort", effortSchema, r.effort, d.effort),
     chime: {
-      enabled: field("chime.enabled", z.boolean(), chimeRaw.enabled, d.chime.enabled),
-      eagerness: field("chime.eagerness", eagerness, chimeRaw.eagerness, d.chime.eagerness),
+      enabled: field("chime.enabled", chimeSchema.shape.enabled, chimeRaw.enabled, d.chime.enabled),
+      eagerness: field("chime.eagerness", eagernessSchema, chimeRaw.eagerness, d.chime.eagerness),
     },
-    triggerEmoji: field("triggerEmoji", triggerEmoji, r.triggerEmoji, d.triggerEmoji),
-    historyWindow: field("historyWindow", historyWindow, r.historyWindow, d.historyWindow),
-    language: field("language", language, r.language, d.language),
-    bakery: field("bakery", z.boolean(), r.bakery, d.bakery),
+    triggerEmoji: field("triggerEmoji", triggerEmojiSchema, r.triggerEmoji, d.triggerEmoji),
+    historyWindow: field("historyWindow", historyWindowSchema, r.historyWindow, d.historyWindow),
+    language: field("language", languageSchema, r.language, d.language),
+    bakery: field("bakery", settingsSchema.shape.bakery, r.bakery, d.bakery),
   };
 }

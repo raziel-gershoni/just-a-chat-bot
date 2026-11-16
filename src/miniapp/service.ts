@@ -1,4 +1,3 @@
-import { z } from "zod";
 import type { Llm } from "../agent/llm";
 import { bakeryConfig } from "../bakery/config";
 import { getGroup, setForgetBefore, updateSettings as saveSettings, type Group } from "../db/repo/groups";
@@ -7,7 +6,7 @@ import { deleteChatRuns } from "../db/repo/runs";
 import type { Db } from "../db/types";
 import { getModels, type ModelInfoLite } from "../models/catalog";
 import { REACTION_EMOJIS } from "../settings/emojis";
-import { HISTORY_WINDOWS, parseSettings, type GroupSettings } from "../settings/schema";
+import { parseSettings, settingsPatchSchema, type GroupSettings } from "../settings/schema";
 import type { TgApi } from "../telegram/types";
 import { errorText } from "../util/errors";
 import { log } from "../util/log";
@@ -39,18 +38,6 @@ export type SettingsView = {
 export type ApiFailure = { ok: false; status: 400 | 403 | 404; error: string };
 export type UpdateResult = { ok: true; view: SettingsView } | ApiFailure;
 
-const patchSchema = z
-  .strictObject({
-    model: z.string().min(1),
-    effort: z.enum(["low", "medium", "high", "xhigh", "max"]),
-    chime: z.strictObject({ enabled: z.boolean(), eagerness: z.enum(["low", "medium", "high"]) }).partial(),
-    triggerEmoji: z.string().refine((e) => REACTION_EMOJIS.includes(e)),
-    historyWindow: z.number().refine((n) => (HISTORY_WINDOWS as readonly number[]).includes(n)),
-    language: z.enum(["he", "en", "ru"]),
-    bakery: z.boolean(),
-  })
-  .partial();
-
 async function activeGroup(deps: MiniDeps, chatId: number): Promise<Group | null> {
   const g = await getGroup(deps.db, chatId);
   return g?.active ? g : null;
@@ -81,7 +68,7 @@ function supportedEffort(effort: GroupSettings["effort"], model: ModelInfoLite):
 }
 
 export async function updateSettings(deps: MiniDeps, claims: SessionClaims, patch: unknown): Promise<UpdateResult> {
-  const parsed = patchSchema.safeParse(patch);
+  const parsed = settingsPatchSchema.safeParse(patch);
   if (!parsed.success) {
     log("miniapp.settings_invalid", { chat_id: claims.chatId, by: claims.userId, issue: parsed.error.issues[0]?.message });
     return { ok: false, status: 400, error: "invalid" };
