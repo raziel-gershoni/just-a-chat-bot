@@ -12,11 +12,11 @@ import { bakeryApi } from "@/src/bakery/api";
 import { handleBakeryCallback } from "@/src/bakery/callback";
 import { bakeryConfig } from "@/src/bakery/config";
 import { handleUpdate, type BotDeps } from "@/src/bot/dispatch";
+import { createChimeRun } from "@/src/chime/enqueue";
 import { createChimeScheduler } from "@/src/chime/scheduler";
 import { env } from "@/src/config/env";
 import { db } from "@/src/db/client";
 import { getGroup } from "@/src/db/repo/groups";
-import { createRun } from "@/src/db/repo/runs";
 import { getModels } from "@/src/models/catalog";
 import { parseSettings } from "@/src/settings/schema";
 import type { StartupDeps } from "@/src/server/startup";
@@ -96,7 +96,7 @@ function build(): ServerDeps {
     llm,
     now,
     enqueueRun: async (chatId, trigger) => {
-      await createRun(database, { chatId, threadId: null, trigger });
+      await createChimeRun(database, chatId, trigger);
       runner.enqueue(chatId);
     },
   });
