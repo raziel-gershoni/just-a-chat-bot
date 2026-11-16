@@ -43,6 +43,7 @@ export const en = {
   miniEagernessLow: "Rarely",
   miniEagernessMedium: "Sometimes",
   miniEagernessHigh: "Often",
+  miniChimeCooldown: "Pause after its last message",
   miniTrigger: "Trigger reaction",
   miniTriggerHint: "React to a message with this emoji and the bot answers it.",
   miniLanguage: "Bot language",

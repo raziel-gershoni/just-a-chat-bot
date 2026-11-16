@@ -70,6 +70,11 @@ describe("updateSettings", () => {
       chime: { enabled: true, eagerness: "high" }, triggerEmoji: "🔥", historyWindow: 200,
     });
   });
+  it("saves a cooldown from the choices and rejects any other", async () => {
+    const r = await updateSettings(deps, member, { chime: { cooldownMinutes: 30 } });
+    expect(r.ok && r.view.settings.chime).toEqual({ enabled: true, eagerness: "low", cooldownMinutes: 30 });
+    expect(await updateSettings(deps, member, { chime: { cooldownMinutes: 7 } })).toEqual({ ok: false, status: 400, error: "invalid" });
+  });
   it("coerces an unsupported effort to medium", async () => {
     const r = await updateSettings(deps, member, { model: "claude-haiku-5-5", effort: "max" });
     expect(r.ok && r.view.settings).toMatchObject({ model: "claude-haiku-5-5", effort: "medium" });

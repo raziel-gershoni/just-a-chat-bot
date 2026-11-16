@@ -21,6 +21,7 @@ import {
 import { LANG_NAMES, pickLang, t, type Lang, type MsgKey } from "@/src/i18n";
 import type { SettingsView } from "@/src/miniapp/service";
 import type { GroupSettings } from "@/src/settings/schema";
+import { CHIME_COOLDOWNS } from "@/src/settings/cooldowns";
 import { HISTORY_WINDOWS } from "@/src/settings/windows";
 import {
   bootstrap,
@@ -65,6 +66,9 @@ const EAGERNESS_LABELS = {
   high: "miniEagernessHigh",
 } as const satisfies Record<Eagerness, MsgKey>;
 const isEffort = (e: string): e is Effort => Object.hasOwn(EFFORT_LABELS, e);
+// "3 min" / "3 דק׳" / "3 мин", in the reader's language.
+const minutes = (lang: Lang, n: number) =>
+  new Intl.NumberFormat(lang, { style: "unit", unit: "minute", unitDisplay: "short" }).format(n);
 
 const ERROR_TEXT: Record<ApiError, MsgKey> = {
   invalid: "miniErrorInvalid",
@@ -300,6 +304,13 @@ export function SettingsForm({ lang, view, status, forget, onChange, onForget }:
               options={(Object.keys(EAGERNESS_LABELS) as Eagerness[]).map((e) => ({ value: e, text: t(lang, EAGERNESS_LABELS[e]) }))}
               value={s.chime.eagerness}
               onSelect={(eagerness) => onChange("chime", { chime: { eagerness } })}
+            />
+            <p className="mt-4 mb-2 text-sm text-tg-hint">{t(lang, "miniChimeCooldown")}</p>
+            <Segmented
+              label={t(lang, "miniChimeCooldown")}
+              options={CHIME_COOLDOWNS.map((n) => ({ value: n as number, text: minutes(lang, n) }))}
+              value={s.chime.cooldownMinutes}
+              onSelect={(cooldownMinutes) => onChange("chime", { chime: { cooldownMinutes } })}
             />
           </div>
         )}

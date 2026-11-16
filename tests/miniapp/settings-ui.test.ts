@@ -92,10 +92,21 @@ describe("SettingsForm", () => {
     expect(html).toMatch(new RegExp(`role="switch" aria-checked="true"[^>]*>(?:(?!</button>).)*${tx("en", "miniChimeSwitch")}`));
   });
 
-  it("hides the eagerness choice while auto-chime is off", () => {
+  it("hides the eagerness and cooldown choices while auto-chime is off", () => {
     const v = settingsView();
-    const html = form({ view: { ...v, settings: { ...v.settings, chime: { enabled: false, eagerness: "low" } } } });
+    const html = form({ view: { ...v, settings: { ...v.settings, chime: { enabled: false, eagerness: "low", cooldownMinutes: 3 } } } });
     expect(html).not.toContain(tx("en", "miniEagerness"));
+    expect(html).not.toContain(tx("en", "miniChimeCooldown"));
+  });
+
+  it("shows the cooldown choices in minutes, the group's one selected", () => {
+    const v = settingsView();
+    const html = form({ view: { ...v, settings: { ...v.settings, chime: { enabled: true, eagerness: "low", cooldownMinutes: 10 } } } });
+    expect(html).toContain(tx("en", "miniChimeCooldown"));
+    expect(html).toMatch(/aria-checked="true"[^>]*>10 min</);
+    expect(html).toMatch(/aria-checked="false"[^>]*>0 min</);
+    expect(html).toMatch(/aria-checked="false"[^>]*>1 min</);
+    expect(html).toMatch(/aria-checked="false"[^>]*>30 min</);
   });
 
   it("shows the bakery only to the owner", () => {

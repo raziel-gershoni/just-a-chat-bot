@@ -2,6 +2,7 @@ import { z } from "zod";
 import { log } from "../util/log";
 import type { Lang } from "../i18n";
 import { REACTION_EMOJIS } from "./emojis";
+import { CHIME_COOLDOWNS } from "./cooldowns";
 import { HISTORY_WINDOWS } from "./windows";
 
 export const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max"]);
@@ -9,7 +10,8 @@ export const eagernessSchema = z.enum(["low", "medium", "high"]);
 export const languageSchema = z.enum(["he", "en", "ru"]);
 export const historyWindowSchema = z.number().refine((n) => (HISTORY_WINDOWS as readonly number[]).includes(n));
 export const triggerEmojiSchema = z.string().refine((e) => REACTION_EMOJIS.includes(e));
-export const chimeSchema = z.strictObject({ enabled: z.boolean(), eagerness: eagernessSchema });
+export const chimeCooldownSchema = z.number().refine((n) => (CHIME_COOLDOWNS as readonly number[]).includes(n));
+export const chimeSchema = z.strictObject({ enabled: z.boolean(), eagerness: eagernessSchema, cooldownMinutes: chimeCooldownSchema });
 
 /** The single definition of a valid settings blob. parseSettings and the Mini App PUT both derive from it. */
 export const settingsSchema = z.strictObject({
@@ -28,7 +30,7 @@ export const settingsPatchSchema = settingsSchema.extend({ chime: chimeSchema.pa
 export type GroupSettings = {
   model: string;
   effort: z.infer<typeof effortSchema>;
-  chime: { enabled: boolean; eagerness: z.infer<typeof eagernessSchema> };
+  chime: { enabled: boolean; eagerness: z.infer<typeof eagernessSchema>; cooldownMinutes: number };
   triggerEmoji: string;
   historyWindow: number;
   language: Lang;
@@ -39,7 +41,7 @@ export function defaultSettings(lang: Lang): GroupSettings {
   return {
     model: "claude-opus-5-5",
     effort: "medium",
-    chime: { enabled: true, eagerness: "low" },
+    chime: { enabled: true, eagerness: "low", cooldownMinutes: 3 },
     triggerEmoji: "👾",
     historyWindow: 100,
     language: lang,
@@ -76,6 +78,7 @@ export function parseSettings(raw: unknown): GroupSettings {
     chime: {
       enabled: field("chime.enabled", chimeSchema.shape.enabled, chimeRaw.enabled, d.chime.enabled),
       eagerness: field("chime.eagerness", eagernessSchema, chimeRaw.eagerness, d.chime.eagerness),
+      cooldownMinutes: field("chime.cooldownMinutes", chimeCooldownSchema, chimeRaw.cooldownMinutes, d.chime.cooldownMinutes),
     },
     triggerEmoji: field("triggerEmoji", triggerEmojiSchema, r.triggerEmoji, d.triggerEmoji),
     historyWindow: field("historyWindow", historyWindowSchema, r.historyWindow, d.historyWindow),

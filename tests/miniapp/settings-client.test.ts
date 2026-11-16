@@ -127,7 +127,7 @@ describe("applyPatch", () => {
   it("merges top-level fields and the nested chime object", () => {
     const v = settingsView();
     const next = applyPatch(v, { chime: { eagerness: "high" }, historyWindow: 400 });
-    expect(next.settings.chime).toEqual({ enabled: true, eagerness: "high" });
+    expect(next.settings.chime).toEqual({ enabled: true, eagerness: "high", cooldownMinutes: 3 });
     expect(next.settings.historyWindow).toBe(400);
     expect(next.settings.model).toBe(v.settings.model);
     expect(v.settings.chime.eagerness).toBe("low");

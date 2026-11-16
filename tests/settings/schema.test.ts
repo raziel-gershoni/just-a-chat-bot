@@ -29,9 +29,12 @@ describe("parseSettings", () => {
   });
   it("merges nested chime fields with defaults", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
-    expect(parseSettings({ chime: { eagerness: "high" } }).chime).toEqual({ enabled: true, eagerness: "high" });
-    expect(parseSettings({ chime: { eagerness: "wild", enabled: false } }).chime).toEqual({ enabled: false, eagerness: "low" });
-    expect(parseSettings({ chime: 5 }).chime).toEqual({ enabled: true, eagerness: "low" });
+    expect(parseSettings({ chime: { eagerness: "high" } }).chime).toEqual({ enabled: true, eagerness: "high", cooldownMinutes: 3 });
+    expect(parseSettings({ chime: { eagerness: "wild", enabled: false } }).chime).toEqual({ enabled: false, eagerness: "low", cooldownMinutes: 3 });
+    expect(parseSettings({ chime: 5 }).chime).toEqual({ enabled: true, eagerness: "low", cooldownMinutes: 3 });
+    expect(parseSettings({ chime: { cooldownMinutes: 10 } }).chime.cooldownMinutes).toBe(10);
+    expect(parseSettings({ chime: { cooldownMinutes: 0 } }).chime.cooldownMinutes).toBe(0);
+    expect(parseSettings({ chime: { cooldownMinutes: 7 } }).chime.cooldownMinutes).toBe(3);
   });
   it("keeps valid language and bakery", () => {
     const s = parseSettings({ language: "he", bakery: true });
@@ -43,7 +46,7 @@ describe("parseSettings", () => {
 describe("defaultSettings", () => {
   it("uses the given language and the spec defaults", () => {
     expect(defaultSettings("ru")).toEqual({
-      model: "claude-opus-5-5", effort: "medium", chime: { enabled: true, eagerness: "low" },
+      model: "claude-opus-5-5", effort: "medium", chime: { enabled: true, eagerness: "low", cooldownMinutes: 3 },
       triggerEmoji: "👾", historyWindow: 100, language: "ru", bakery: false,
     });
   });

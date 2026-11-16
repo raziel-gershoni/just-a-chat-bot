@@ -6,7 +6,7 @@ export function settingsView(over: Partial<SettingsView> = {}): SettingsView {
     settings: {
       model: "claude-opus-5-5",
       effort: "medium",
-      chime: { enabled: true, eagerness: "low" },
+      chime: { enabled: true, eagerness: "low", cooldownMinutes: 3 },
       triggerEmoji: "👾",
       historyWindow: 100,
       language: "en",

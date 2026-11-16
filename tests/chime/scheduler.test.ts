@@ -79,8 +79,35 @@ describe("createChimeScheduler", () => {
     expect(spy).toHaveBeenCalledWith(expect.any(Function), 30_000);
   });
 
+  it("the cooldown is the group's setting, 3 minutes by default", async () => {
+    const { db, llm, t, s } = await setup([NO]);
+    await add(db, 1);
+    await add(db, 2, { isBot: true, fromId: 99, date: new Date(NOW.getTime() - 5 * 60_000) });
+    await add(db, 3, { date: new Date(NOW.getTime() - 60_000) });
+    s.onHumanMessage(1);
+    await t.fire();
+    expect(llm.classifyCalls).toHaveLength(1); // 5 min since the bot spoke: past the default 3
+    await add(db, 4, { isBot: true, fromId: 99, date: new Date(NOW.getTime() - 2 * 60_000) });
+    await add(db, 5, { date: new Date(NOW.getTime() - 30_000) });
+    s.onHumanMessage(1);
+    await t.fire();
+    expect(llm.classifyCalls).toHaveLength(1);
+    expect(logged("chime.skip").at(-1)).toMatchObject({ reason: "cooldown" });
+  });
+
+  it("a cooldown of 0 leaves only the 30 s debounce", async () => {
+    const { db, llm, t, s } = await setup([NO]);
+    await updateSettings(db, 1, { chime: { enabled: true, eagerness: "low", cooldownMinutes: 0 } });
+    await add(db, 1, { isBot: true, fromId: 99, date: new Date(NOW.getTime() - 10_000) });
+    await add(db, 2, { date: new Date(NOW.getTime() - 5_000) });
+    s.onHumanMessage(1);
+    await t.fire();
+    expect(llm.classifyCalls).toHaveLength(1);
+  });
+
   it("skips within the cooldown", async () => {
     const { db, llm, t, s, runs } = await setup();
+    await updateSettings(db, 1, { chime: { enabled: true, eagerness: "low", cooldownMinutes: 10 } });
     await add(db, 1);
     await add(db, 2, { isBot: true, fromId: 99, date: new Date(NOW.getTime() - 5 * 60_000) });
     await add(db, 3, { date: new Date(NOW.getTime() - 60_000) });

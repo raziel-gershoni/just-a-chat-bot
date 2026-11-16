@@ -168,7 +168,7 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
 
 ### 6.4 Auto-chime
 - **Debounce:** each new human message (when auto-chime is on and nothing else triggered) resets a **30 s in-memory timer** for that chat, so a burst of messages costs one check.
-- **Skips:** the check is skipped while a run is active or within the **10-min cooldown** after the bot last spoke. Chime and cooldown are **per chat**, not per topic. In groups with topics, the classifier reads only the topic of the newest message, which is where the chime would answer.
+- **Skips:** the check is skipped while a run is active or within the **cooldown** after the bot last spoke (a group setting: 0 / 1 / 3 / 10 / 30 min, default 3; 0 leaves only the debounce). Chime and cooldown are **per chat**, not per topic. In groups with topics, the classifier reads only the topic of the newest message, which is where the chime would answer.
 - **Restarts:** a timer lost in a restart is acceptable; the next message re-arms it.
 - **The check:**
   - Haiku 5.5, effort `low`, structured JSON output `{ chime: boolean, reason: string }`.
@@ -269,7 +269,7 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
 - **One page.** Mobile-first; light/dark follows the device; UI in Hebrew/English/Russian by the viewer's Telegram language, with RTL; lucide icons; the `just-a-list-manager` look. Settings:
   - **Model:** list from the Models API (active models with image input), cached for 1 day. Default Opus 5.5.
   - **Effort:** low/medium/high/xhigh/max, limited to what the model supports. Default medium.
-  - **Auto-chime:** on/off (default on) and eagerness low/medium/high (default low).
+  - **Auto-chime:** on/off (default on), eagerness low/medium/high (default low), and the cooldown after the bot speaks, 0 / 1 / 3 / 10 / 30 min (default 3).
   - **Trigger reaction:** any emoji from the allowed list. Default 👾.
   - **Bot language** (fixed texts in the group): he/en/ru. Default is the adder's language.
   - **Memory:** recent messages read (50/100/200/400; default 100).
@@ -363,7 +363,7 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
 1. The bot must be a **group admin**, because Telegram delivers reactions only to admins.
 2. Default trigger emoji **👾** (🤖 isn't an allowed reaction); changeable in settings.
 3. The bot stays only in groups the **owner** belongs to, and leaves if the owner leaves.
-4. Auto-chime: **30 s debounce**, eagerness default **low**, **10-min cooldown** after the bot speaks, and it may decide to say nothing.
+4. Auto-chime: **30 s debounce**, eagerness default **low**, a **cooldown** after the bot speaks that the group chooses (0 / 1 / 3 / 10 / 30 min, default 3; was a fixed 10 min until 2026-11-16), and it may decide to say nothing.
 5. Memory: default **100 messages**; at most 800 kept per group; "Forget history" truly deletes.
 6. Images/PDFs are attached only for the **last ~10 messages** plus the trigger targets; older ones become text placeholders.
 7. Bakery: enabled per group by an **owner-only toggle** in settings (default off), covering all topics of that group; **auto-chime runs get bakery read tools only** (allowlist of the 5 read tools); if the proposal GET fails, the card falls back to the bakery's `summary` from the propose result; 401/network failures on a press keep the buttons.

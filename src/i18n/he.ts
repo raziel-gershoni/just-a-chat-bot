@@ -45,6 +45,7 @@ export const he: Record<MsgKey, string> = {
   miniEagernessLow: "לעתים רחוקות",
   miniEagernessMedium: "לפעמים",
   miniEagernessHigh: "לעתים קרובות",
+  miniChimeCooldown: "הפסקה אחרי ההודעה האחרונה שלו",
   miniTrigger: "אמוג׳י הפעלה",
   miniTriggerHint: "שימו את האמוג׳י הזה על הודעה, והבוט יענה עליה.",
   miniLanguage: "שפת הבוט",

@@ -45,6 +45,7 @@ export const ru: Record<MsgKey, string> = {
   miniEagernessLow: "Редко",
   miniEagernessMedium: "Иногда",
   miniEagernessHigh: "Часто",
+  miniChimeCooldown: "Пауза после его последнего сообщения",
   miniTrigger: "Реакция-триггер",
   miniTriggerHint: "Поставьте эту реакцию на сообщение, и бот на него ответит.",
   miniLanguage: "Язык бота",
