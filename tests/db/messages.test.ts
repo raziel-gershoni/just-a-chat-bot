@@ -91,6 +91,11 @@ test("recentMessages reads the whole chat, or one thread", async () => {
   expect((await recentMessages(db, 1, 2, { threadId: null })).map((m) => m.messageId)).toEqual([3, 5]);
 });
 
+test("recentMessages can stop at a seq (the newest rows up to it)", async () => {
+  const db = await fill(6);
+  expect((await recentMessages(db, 1, 2, { threadId: null, upToSeq: 4 })).map((m) => m.messageId)).toEqual([3, 4]);
+});
+
 test("recentMessages, lastBotMessageAt, getMessage, updateMessageText", async () => {
   const db = await fill(5, (i) => ({ isBot: i === 3 }));
   expect((await recentMessages(db, 1, 2)).map((m) => m.messageId)).toEqual([4, 5]);

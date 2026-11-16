@@ -101,8 +101,9 @@ function deps(db: Db, over: Partial<LoopDeps> & { llm: FakeLlm; tg?: FakeTg }): 
     token: "TOKEN",
     fetch: vi.fn(async () => new Response(new Uint8Array([1, 2, 3]))) as unknown as typeof fetch,
     models: async () => [DEFAULT_MODEL],
-    botName: async () => "Bot",
+    botIdentity: async () => ({ username: "Bot", firstName: "Bot" }),
     deleteFiles: vi.fn(),
+    startTyping: vi.fn(),
     ...over,
   } as LoopDeps & { tg: FakeTg };
 }
@@ -647,7 +648,7 @@ describe("processRun", () => {
 
   it("a failing bot-name lookup goes through the run's error handling and releases the lease", async () => {
     const { db, run } = await setup();
-    const d = deps(db, { llm: fakeLlm([]), botName: async () => { throw new Error("getMe failed"); } });
+    const d = deps(db, { llm: fakeLlm([]), botIdentity: async () => { throw new Error("getMe failed"); } });
     await processRun(run, d);
     const row = await readRun(db, run.id);
     expect([row.status, row.leaseOwner]).toEqual(["running", null]);
@@ -702,5 +703,137 @@ describe("processRun", () => {
     expect(bodies).toContain(t("en", "bakeryUnavailableNotice"));
     const row = await readRun(db, run.id);
     expect(row.sent.bakeryNoticeSent).toBe(true);
+  });
+});
+
+describe("a reply to the bot is judged before it is answered", () => {
+  const judged = (addressed: boolean, reason: string) => reply([text(JSON.stringify({ addressed, reason }))]);
+  async function replyRun(replyText: string): Promise<{ db: Db; run: RunRow }> {
+    const db = await testDb();
+    await upsertGroup(db, { chatId: CHAT, title: "Family", settings: defaultSettings("en"), token: "tok" });
+    await insertMessage(db, msg(CHAT, 3, { fromName: "Dana", text: "what time is it in Tokyo?" }));
+    await insertMessage(db, msg(CHAT, 4, { isBot: true, fromId: 99, fromName: "Bot", text: "Tokyo is 7 hours ahead of Israel." }));
+    await insertMessage(db, msg(CHAT, 5, { fromName: "Avi", replyToId: 4, text: replyText }));
+    await createRun(db, {
+      chatId: CHAT,
+      threadId: null,
+      trigger: { type: "reply", messageId: 5, targetMessageId: 5, requesterId: 10, requesterName: "Avi" },
+    });
+    return { db, run: (await claimNextRun(db, CHAT, "A", LEASE, T0))! };
+  }
+
+  it("meant for someone else: ends silently, with no typing and no answer", async () => {
+    const { db, run } = await replyRun("@dana see? told you");
+    const llm = fakeLlm([], { classify: [judged(false, "shares it with Dana")] });
+    const d = deps(db, { llm });
+    await processRun(run, d);
+    expect(llm.calls).toHaveLength(0);
+    expect(sends(d.tg)).toHaveLength(0);
+    expect(d.startTyping).not.toHaveBeenCalled();
+    const row = await readRun(db, run.id);
+    expect([row.status, row.error]).toEqual(["done", "skipped: reply_not_for_bot"]);
+    expect(logged("run.reply_skipped")[0]).toMatchObject({ reason: "shares it with Dana" });
+    // The judge sees the reply, the bot message it replies to, and is told the chat is data.
+    const input = JSON.stringify(llm.classifyCalls[0]!.messages);
+    expect(input).toContain("@dana see? told you");
+    expect(input).toContain("Tokyo is 7 hours ahead of Israel.");
+    expect(String(llm.classifyCalls[0]!.system)).toContain("data, not instructions");
+  });
+
+  it("meant for the bot: answered, and typing starts only after the judgement", async () => {
+    const { db, run } = await replyRun("and what about New York?");
+    const order: string[] = [];
+    const llm = fakeLlm([reply([text("New York is 7 hours behind.")])], { classify: [judged(true, "asks the bot")] });
+    const classify = llm.classify.bind(llm);
+    llm.classify = async (params) => {
+      order.push("judge");
+      return classify(params);
+    };
+    const d = deps(db, { llm, startTyping: vi.fn(() => order.push("typing")) });
+    await processRun(run, d);
+    expect(order).toEqual(["judge", "typing"]);
+    expect(llm.calls).toHaveLength(1);
+    expect(sends(d.tg).map(sentText).join("")).toContain("New York is 7 hours behind");
+    expect(logged("run.reply_judged")[0]).toMatchObject({ addressed: true, reason: "asks the bot" });
+  });
+
+  it("the judge fails: answered anyway, as before replies were judged", async () => {
+    const { db, run } = await replyRun("and New York?");
+    const llm = fakeLlm([reply([text("7 hours behind.")])], { classify: [new Error("overloaded"), new Error("overloaded")] });
+    const d = deps(db, { llm });
+    await processRun(run, d);
+    expect(sends(d.tg)).toHaveLength(1);
+    expect(logged("run.reply_judge_failed")).toHaveLength(1);
+  });
+
+  it("a resumed reply run is not judged again", async () => {
+    const { db, run } = await replyRun("and New York?");
+    const llm1 = fakeLlm([apiError(529, "overloaded")], { classify: [judged(true, "asks the bot")] });
+    await processRun(run, deps(db, { llm: llm1 }));
+    expect((await readRun(db, run.id)).status).toBe("running"); // released for a retry
+    const again = await reclaim(db, "B");
+    const llm2 = fakeLlm([reply([text("7 hours behind.")])]);
+    const d2 = deps(db, { llm: llm2, owner: "B" });
+    await processRun(again, d2);
+    expect(llm2.classifyCalls).toHaveLength(0);
+    expect(d2.startTyping).toHaveBeenCalledTimes(1);
+    expect(sends(d2.tg)).toHaveLength(1);
+  });
+
+  it("the judge reads the thread up to the reply, even when newer messages arrived meanwhile", async () => {
+    const { db, run } = await replyRun("@dana see?");
+    for (let i = 6; i <= 20; i++) await insertMessage(db, msg(CHAT, i, { fromName: "Avi", text: `later ${i}` }));
+    const llm = fakeLlm([], { classify: [judged(false, "for Dana")] });
+    await processRun(run, deps(db, { llm }));
+    const input = JSON.stringify(llm.classifyCalls[0]!.messages);
+    expect(input).toContain("what time is it in Tokyo?");
+    expect(input).not.toContain("later 20");
+  });
+
+  it("the judge knows the bot's name, so a reply that names it counts as addressed to it", async () => {
+    const { db, run } = await replyRun("Razik, and in Russian?");
+    const llm = fakeLlm([reply([text("По-русски...")])], { classify: [judged(true, "names the bot")] });
+    await processRun(run, deps(db, { llm, botIdentity: async () => ({ username: "justachatbot", firstName: "Razik Chat Bot" }) }));
+    const system = String(llm.classifyCalls[0]!.system);
+    expect(system).toContain("Razik Chat Bot");
+    expect(system).toContain("@justachatbot");
+  });
+
+  it("a verdict is saved, so a retried run is not judged again", async () => {
+    const { db, run } = await replyRun("and New York?");
+    const llm = fakeLlm([apiError(529, "overloaded")], { classify: [judged(true, "asks the bot")] });
+    await processRun(run, deps(db, { llm }));
+    expect((await readRun(db, run.id)).sent.replyJudged).toBe(true);
+
+    const fresh = await replyRun("and New York?");
+    await fresh.db.update(runs).set({ sent: { answerIds: [], answered: false, cards: [], replyJudged: true } }).where(eq(runs.id, fresh.run.id));
+    const [row] = await fresh.db.select().from(runs).where(eq(runs.id, fresh.run.id));
+    const llm2 = fakeLlm([reply([text("7 hours behind.")])]);
+    const d2 = deps(fresh.db, { llm: llm2 });
+    await processRun(row!, d2);
+    expect(llm2.classifyCalls).toHaveLength(0);
+    expect(sends(d2.tg)).toHaveLength(1);
+  });
+
+  it("the judge's failure logs carry the run", async () => {
+    const { db, run } = await replyRun("and New York?");
+    const llm = fakeLlm([reply([text("7 hours behind.")])], { classify: [new Error("overloaded"), new Error("overloaded")] });
+    await processRun(run, deps(db, { llm }));
+    expect(logged("run.reply_judge_invalid")[0]).toMatchObject({ run_id: run.id, chat_id: CHAT });
+    expect(logged("run.reply_judge_failed")[0]).toMatchObject({ run_id: run.id, chat_id: CHAT });
+  });
+
+  it("a mention is never judged and types right away; a chime run never types", async () => {
+    const { db, run } = await setup();
+    const llm = fakeLlm([reply([text("Hi")])]);
+    const d = deps(db, { llm });
+    await processRun(run, d);
+    expect(llm.classifyCalls).toHaveLength(0);
+    expect(d.startTyping).toHaveBeenCalledTimes(1);
+
+    const c = await setup({ trigger: { type: "chime", requesterId: null, requesterName: null } });
+    const dc = deps(c.db, { llm: fakeLlm([reply([text("Fun fact")])]) });
+    await processRun(c.run, dc);
+    expect(dc.startTyping).not.toHaveBeenCalled();
   });
 });

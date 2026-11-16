@@ -1,6 +1,7 @@
 // Drives reply runs, one loop per chat in this process. Each loop claims the chat's oldest pending
 // run through the DB lease (so two instances alive during a deploy never work one chat at once),
-// keeps the lease alive and the typing indicator on while `process` works, then claims the next.
+// keeps the lease alive while `process` works (and the typing indicator on once `process` starts it),
+// then claims the next.
 // A run released for a retry is held back in the DB for attempts*30 s and re-enqueued then.
 // Loops that die are not restarted here: the sweeper finds their runs once the lease expires.
 import { claimNextRun, deferRetry, releaseUnstarted, renewLease, type RunRow } from "../db/repo/runs";
@@ -18,8 +19,11 @@ export type RunnerDeps = {
   renewMs: number;
   typingMs: number;
   now(): Date;
-  /** Works one leased run; ends it as finished, released for a retry, or with the lease lost. */
-  process(run: RunRow): Promise<void>;
+  /**
+   * Works one leased run; ends it as finished, released for a retry, or with the lease lost.
+   * `startTyping` turns the typing indicator on for the rest of the run (see LoopDeps.startTyping).
+   */
+  process(run: RunRow, work: { startTyping(): void }): Promise<void>;
   setTimeout?: typeof setTimeout;
   setInterval?: typeof setInterval;
   clearInterval?: typeof clearInterval;
@@ -94,11 +98,11 @@ export function createRunner(deps: RunnerDeps): Runner {
           attempts: run.attempts,
           resumed: run.snapshot !== null,
         });
-        const stopWork = keepAlive(run);
+        const work = keepAlive(run);
         try {
-          await deps.process(run);
+          await deps.process(run, { startTyping: work.startTyping });
         } finally {
-          stopWork();
+          work.stop();
         }
         const retry = await deferRetry(db, run.id, deps.now(), RETRY_STEP_MS);
         if (retry) {
@@ -115,9 +119,8 @@ export function createRunner(deps: RunnerDeps): Runner {
     }
   }
 
-  // Lease heartbeat and typing indicator for one run; returns the function that stops both.
-  // A chime run shows no typing: it often ends silent, and nobody is waiting for it.
-  function keepAlive(run: RunRow): () => void {
+  // Lease heartbeat for one run, plus the typing indicator once the run starts it; `stop` ends both.
+  function keepAlive(run: RunRow): { startTyping(): void; stop(): void } {
     const ids = { chat_id: run.chatId, run_id: run.id };
     const heartbeat = every(() => {
       renewLease(db, run.id, owner, deps.leaseMs, deps.now()).then(
@@ -133,10 +136,19 @@ export function createRunner(deps: RunnerDeps): Runner {
         log("runner.typing_failed", { ...ids, error: errorText(err) });
       });
     };
-    const typer = run.trigger.type === "chime" ? null : (typing(), every(typing, deps.typingMs));
-    return () => {
-      stopEvery(heartbeat);
-      if (typer) stopEvery(typer);
+    let typer: ReturnType<typeof setInterval> | null = null;
+    let stopped = false;
+    return {
+      startTyping() {
+        if (typer || stopped) return;
+        typing();
+        typer = every(typing, deps.typingMs);
+      },
+      stop() {
+        stopped = true;
+        stopEvery(heartbeat);
+        if (typer) stopEvery(typer);
+      },
     };
   }
 

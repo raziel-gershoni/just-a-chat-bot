@@ -33,7 +33,7 @@ export type ServerDeps = {
   runner: Runner;
   hooks: Pick<BotDeps, "enqueue" | "chime" | "onCallback" | "deleteFiles">;
   /** Runs `bot.init()` (one getMe) once; every caller shares the result. */
-  botInfo(): Promise<{ id: number; username: string }>;
+  botInfo(): Promise<{ id: number; username: string; firstName: string }>;
   webhook: WebhookDeps;
   /** What the Mini App API needs. */
   miniapp: MiniDeps;
@@ -76,7 +76,7 @@ function build(): ServerDeps {
     renewMs: RENEW_MS,
     typingMs: TYPING_MS,
     now,
-    process: async (run) => {
+    process: async (run, work) => {
       // Read from env at call time and never stored.
       const cfg = bakeryConfig({ BAKERY_URL: e.BAKERY_URL, BAKERY_MCP_KEY: e.BAKERY_MCP_KEY });
       await processRun(run, {
@@ -90,8 +90,12 @@ function build(): ServerDeps {
         token: e.TELEGRAM_BOT_TOKEN,
         fetch,
         models: () => getModels({ db: database, llm, now }),
-        botName: async () => (await botInfo()).username,
+        botIdentity: async () => {
+          const me = await botInfo();
+          return { username: me.username, firstName: me.firstName };
+        },
         deleteFiles,
+        startTyping: work.startTyping,
       });
     },
   });
@@ -121,10 +125,10 @@ function build(): ServerDeps {
     deleteFiles,
   };
 
-  let initing: Promise<{ id: number; username: string }> | null = null;
+  let initing: Promise<{ id: number; username: string; firstName: string }> | null = null;
   const botInfo = () => {
     if (!initing) {
-      const attempt = bot.init().then(() => ({ id: bot.botInfo.id, username: bot.botInfo.username }));
+      const attempt = bot.init().then(() => ({ id: bot.botInfo.id, username: bot.botInfo.username, firstName: bot.botInfo.first_name }));
       // A failed getMe must not be cached forever: the next update tries again.
       attempt.catch((err) => {
         log("deps.bot_init_failed", { error: errorText(err) });

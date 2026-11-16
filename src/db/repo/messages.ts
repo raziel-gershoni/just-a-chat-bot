@@ -102,17 +102,23 @@ export async function windowMessages(
     .orderBy(asc(messages.seq));
 }
 
-/** The newest `limit` messages of the chat, or of one thread when given, ascending. */
+/** The newest `limit` messages of the chat, or of one thread (up to a seq) when given, ascending. */
 export async function recentMessages(
   db: Db,
   chatId: number,
   limit: number,
-  only?: { threadId: number | null },
+  only?: { threadId: number | null; upToSeq?: number },
 ): Promise<StoredMessage[]> {
   const rows = await db
     .select()
     .from(messages)
-    .where(and(eq(messages.chatId, chatId), only ? inThread(only.threadId) : undefined))
+    .where(
+      and(
+        eq(messages.chatId, chatId),
+        only ? inThread(only.threadId) : undefined,
+        only?.upToSeq != null ? lte(messages.seq, only.upToSeq) : undefined,
+      ),
+    )
     .orderBy(desc(messages.seq))
     .limit(limit);
   return rows.reverse();

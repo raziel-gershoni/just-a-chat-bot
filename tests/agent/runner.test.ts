@@ -67,7 +67,7 @@ function gated(db: Db) {
 }
 
 type Opts = Partial<Parameters<typeof createRunner>[0]>;
-function runner(db: Db, tg: FakeTg, process: (run: RunRow) => Promise<void>, o: Opts = {}): Runner {
+function runner(db: Db, tg: FakeTg, process: (run: RunRow, work: { startTyping(): void }) => Promise<void>, o: Opts = {}): Runner {
   return createRunner({
     db,
     tg,
@@ -222,13 +222,15 @@ describe("per-chat loop", () => {
 });
 
 describe("typing and lease heartbeat", () => {
-  it("sends typing in the run's thread every typingMs while process runs, and stops after", async () => {
+  it("once process starts it, sends typing in the run's thread every typingMs, and stops after", async () => {
     const db = await testDb();
     const run = await mk(db, 1, 7);
     fakeTimers();
     const tg = fakeTg();
     const started = deferred();
-    const r = runner(db, tg, async (row) => {
+    const r = runner(db, tg, async (row, work) => {
+      work.startTyping();
+      work.startTyping(); // a second start changes nothing
       started.resolve();
       await new Promise((res) => setTimeout(res, 9_000));
       await finishRun(db, row.id, OWNER, "done");
@@ -244,12 +246,9 @@ describe("typing and lease heartbeat", () => {
     expect(tg.calls.filter((c) => c.method === "sendChatAction")).toHaveLength(typing.length);
   });
 
-  it("shows no typing for a chime run", async () => {
+  it("shows no typing until process starts it (a chime, or a reply not yet judged)", async () => {
     const db = await testDb();
-    const run = (await createRun(db, {
-      chatId: 1, threadId: null,
-      trigger: { type: "chime", messageId: 1, targetMessageId: 1, requesterId: null, requesterName: null },
-    }))!;
+    const run = await mk(db, 1);
     const tg = fakeTg();
     const p = gated(db);
     const r = runner(db, tg, p.process);
@@ -268,11 +267,11 @@ describe("typing and lease heartbeat", () => {
     tg.sendChatAction = async () => {
       throw new Error("chat not found");
     };
-    const p = gated(db);
-    const r = runner(db, tg, p.process);
+    const r = runner(db, tg, async (row, work) => {
+      work.startTyping();
+      await finishRun(db, row.id, OWNER, "done");
+    });
     r.enqueue(1);
-    await p.started(1);
-    p.release(run.id);
     await r.drain();
     expect(logged("runner.typing_failed")[0]).toMatchObject({ chat_id: 1, run_id: run.id, error: "chat not found" });
   });

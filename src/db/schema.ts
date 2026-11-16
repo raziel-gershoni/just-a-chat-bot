@@ -34,6 +34,8 @@ export type RunSent = {
   partsSent?: number;
   /** The sources message that follows the last part when it doesn't fit in it is delivered. */
   tailSent?: boolean;
+  /** A reply-to-bot run was judged to be answered, so a retry doesn't judge it again. */
+  replyJudged?: boolean;
 };
 
 export type RunSnapshot = {

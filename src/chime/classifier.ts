@@ -1,14 +1,11 @@
-import type { BetaMessage } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { z } from "zod";
+import { classifyJson } from "../agent/classify";
 import type { Llm } from "../agent/llm";
 import type { StoredMessage } from "../db/repo/messages";
 import type { GroupSettings } from "../settings/schema";
-import { errorText } from "../util/errors";
-import { log } from "../util/log";
 import { israelTime } from "../util/time";
 
 export type ChimeDecision = { chime: boolean; reason: string };
-export const CLASSIFIER_MODEL = "claude-haiku-5-5";
 
 const decision = z.object({ chime: z.boolean(), reason: z.string() });
 
@@ -40,37 +37,20 @@ const SCHEMA = {
   properties: { chime: { type: "boolean" }, reason: { type: "string" } },
   required: ["chime", "reason"],
   additionalProperties: false,
-} as const;
+};
 
-function parse(msg: BetaMessage): ChimeDecision {
-  const block = msg.content.find((b) => b.type === "text");
-  if (!block || block.type !== "text") throw new Error("no text block");
-  return decision.parse(JSON.parse(block.text));
-}
-
-/** One call plus one retry on invalid output; null (logged) when both fail. */
+/** One call plus one retry on a failed call or invalid output; null (logged) when both fail. */
 export async function classifyChime(
   deps: { llm: Pick<Llm, "classify"> },
   input: { transcript: string; eagerness: GroupSettings["chime"]["eagerness"]; bakery: boolean },
 ): Promise<ChimeDecision | null> {
-  const params = {
-    model: CLASSIFIER_MODEL,
-    max_tokens: 400,
+  return classifyJson(deps.llm, {
+    event: "chime.classify",
     system: systemPrompt(input.eagerness, input.bakery),
-    messages: [{ role: "user" as const, content: `<transcript>\n${input.transcript}\n</transcript>` }],
-    output_config: { effort: "low" as const, format: { type: "json_schema" as const, schema: SCHEMA } },
-  };
-  let lastError = "";
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      return parse(await deps.llm.classify(params as never));
-    } catch (err) {
-      lastError = errorText(err);
-      log("chime.classify_invalid", { attempt, error: lastError });
-    }
-  }
-  log("chime.classify_failed", { error: lastError });
-  return null;
+    user: `<transcript>\n${input.transcript}\n</transcript>`,
+    jsonSchema: SCHEMA,
+    schema: decision,
+  });
 }
 
 /** `[HH:MM] Name: text [label]` in Israel time; bot rows are `Bot:`. */

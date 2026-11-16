@@ -11,7 +11,7 @@ import { extractProposals } from "../bakery/proposals";
 import { buildTranscript, pickAttachments, type Attach } from "../conversation/build";
 import { ensureUploaded } from "../conversation/media";
 import { getGroup, type Group } from "../db/repo/groups";
-import { getMessage, insertMessage, lastBotMessageAt, windowMessages, type StoredMessage } from "../db/repo/messages";
+import { getMessage, insertMessage, lastBotMessageAt, recentMessages, windowMessages, type StoredMessage } from "../db/repo/messages";
 import { finishRun, hasUserRunSince, releaseLease, saveCheckpoint, type RunRow } from "../db/repo/runs";
 import type { RunSent, RunSnapshot } from "../db/schema";
 import type { Db } from "../db/types";
@@ -25,6 +25,7 @@ import { log } from "../util/log";
 import { answerSources, answerText, runBlocks } from "./answer";
 import type { Llm } from "./llm";
 import { contextMessage } from "./prompts";
+import { judgeReply, REPLY_JUDGE_MESSAGES } from "./reply-judge";
 import { buildParams, newSnapshot } from "./request";
 
 export type LoopDeps = {
@@ -41,10 +42,19 @@ export type LoopDeps = {
   token: string;
   fetch: typeof fetch;
   models(): Promise<ModelInfoLite[]>;
-  /** Shown as the sender of the bot's stored answer rows (resolved inside the run's error handling). */
-  botName(): Promise<string>;
+  /**
+   * The bot's Telegram names (resolved inside the run's error handling): the username is shown as
+   * the sender of its stored answer rows; both tell the reply judge what the bot is called.
+   */
+  botIdentity(): Promise<{ username: string; firstName: string }>;
   /** Fire-and-forget; logs its own failures (the same hook the dispatcher uses for pruned rows). */
   deleteFiles(ids: string[]): void;
+  /**
+   * Turns on the runner's typing indicator for this run (repeat calls do nothing). Called once the
+   * run is going to answer: never for a chime run (it often ends silent and nobody is waiting),
+   * and for a reply to the bot only after it was judged to be meant for the bot.
+   */
+  startTyping(): void;
 };
 
 const MAX_PAUSES = 5;
@@ -120,7 +130,10 @@ async function drive(ctx: Ctx): Promise<void> {
     return fail(ctx, `attempts_exhausted: claimed ${run.attempts} times`);
   }
   if (ctx.chime && !ctx.snap && (await chimeIsStale(ctx))) return;
-  ctx.botName = await deps.botName();
+  const me = await deps.botIdentity();
+  ctx.botName = me.username;
+  if (run.trigger.type === "reply" && !ctx.snap && !ctx.sent.replyJudged && (await replyNotForBot(ctx, group, me))) return;
+  if (!ctx.chime) deps.startTyping();
 
   let snap = ctx.snap ?? (await buildSnapshot(ctx, group, settings));
   if (!ctx.snap) {
@@ -152,6 +165,35 @@ async function drive(ctx: Ctx): Promise<void> {
     await checkpoint(ctx, { snapshot: snap, steps: ctx.steps });
   }
   await finalize(ctx, snap);
+}
+
+// A reply to one of the bot's messages may be meant for someone else (e.g. quoting the bot to
+// another member). Before anything is built, the classifier judges it from the thread's recent
+// messages; a reply not meant for the bot ends the run silently. When the judge fails, the reply
+// is answered, as before replies were judged. A verdict to answer is saved (sent.replyJudged), so
+// a retry before the snapshot exists doesn't judge again and maybe change its mind.
+async function replyNotForBot(ctx: Ctx, group: Group, bot: { username: string; firstName: string }): Promise<boolean> {
+  const { run, deps } = ctx;
+  const reply = await getMessage(deps.db, run.chatId, run.trigger.messageId);
+  if (!reply) {
+    log("run.reply_judge_skipped", { ...ids(ctx), reason: "reply_not_stored" });
+    return false;
+  }
+  const visible = (r: StoredMessage | null) => (r && (!group.forgetBefore || r.date > group.forgetBefore) ? r : null);
+  const recent = (
+    await recentMessages(deps.db, run.chatId, REPLY_JUDGE_MESSAGES, { threadId: run.threadId, upToSeq: reply.seq })
+  ).filter((r) => visible(r));
+  const repliedTo = reply.replyToId != null ? visible(await getMessage(deps.db, run.chatId, reply.replyToId)) : null;
+  const j = await judgeReply(deps.llm, { bot, recent, repliedTo, reply }, ids(ctx));
+  if (j) log("run.reply_judged", { ...ids(ctx), addressed: j.addressed, reason: j.reason });
+  if (!j || j.addressed) {
+    ctx.sent = { ...ctx.sent, replyJudged: true };
+    await checkpoint(ctx, { sent: ctx.sent });
+    return false;
+  }
+  log("run.reply_skipped", { ...ids(ctx), reason: j.reason });
+  if (!(await finishRun(deps.db, run.id, deps.owner, "done", "skipped: reply_not_for_bot"))) throw new LeaseLost();
+  return true;
 }
 
 // A chime run that waited behind other work is dropped when the bot has spoken since it was

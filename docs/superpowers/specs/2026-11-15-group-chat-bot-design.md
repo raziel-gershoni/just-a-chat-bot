@@ -160,10 +160,12 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
 - The bot's own sent messages are stored at send time.
 - **Trigger detection** (any of these starts a reply run):
   1. a `mention`/`text_mention` entity for the bot
-  2. a reply to a stored bot message
+  2. a reply to a stored bot message. Before such a run answers, Haiku judges from the reply, the bot message it replies to and the thread's last few messages whether the reply is meant for the bot or for other people (e.g. quoting the bot to someone). A reply not meant for the bot ends the run silently (logged). When unsure, or when the judge fails, the reply is answered. Mentions and reactions are never judged.
   3. a `message_reaction` where the newly added emoji equals the group's trigger emoji
 
   For a reaction, the target is the reacted-to stored message and the reactor is the requester. A given message triggers at most one reaction-run, however many people add the emoji.
+
+  The typing indicator starts once a run is going to answer: right away for a mention or a reaction, after the judgement for a reply, never for an auto-chime run.
 - **Albums:** a run triggered on an album message waits about 2 s so all its parts are stored.
 
 ### 6.4 Auto-chime
