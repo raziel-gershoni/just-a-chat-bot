@@ -8,6 +8,7 @@ import {
   deleteChatRuns,
   finishRun,
   hasActiveRun,
+  hasNewerAskCovering,
   hasUserRunSince,
   pruneRuns,
   releaseLease,
@@ -99,15 +100,50 @@ test("a run created twice for one user trigger exists once; chime runs are never
   expect(await createRun(db, { chatId: 1, threadId: null, trigger: chime })).not.toBeNull();
 });
 
-test("hasUserRunSince ignores chime runs and older runs", async () => {
+test("hasUserRunSince ignores chime runs, plain-message runs and older runs", async () => {
   const db = await testDb();
   const since = new Date(Date.now() - 60_000);
   const chime = { type: "chime", messageId: 1, targetMessageId: 1, requesterId: null, requesterName: null } as const;
   await createRun(db, { chatId: 1, threadId: null, trigger: chime });
+  await createRun(db, { chatId: 1, threadId: null, trigger: { ...trig(), type: "message" } });
   expect(await hasUserRunSince(db, 1, since)).toBe(false);
   await mk(db);
   expect(await hasUserRunSince(db, 1, since)).toBe(true);
   expect(await hasUserRunSince(db, 1, new Date(Date.now() + 60_000))).toBe(false);
+});
+
+test("hasNewerAskCovering: the writer's later mention in the same thread, or anyone's trigger emoji on that message", async () => {
+  const db = await testDb();
+  const add = (requesterId: number, type: "mention" | "reply" | "reaction" | "message" | "chime", o: { chatId?: number; threadId?: number | null; target?: number } = {}) =>
+    createRun(db, {
+      chatId: o.chatId ?? 1,
+      threadId: o.threadId ?? null,
+      trigger: { ...trig(), type, requesterId, ...(o.target != null ? { targetMessageId: o.target } : {}) },
+    });
+  const base = (await add(7, "message"))!;
+  const covers = () => hasNewerAskCovering(db, { chatId: 1, runId: base.id, threadId: null, requesterId: 7, messageId: base.trigger.messageId });
+  await add(7, "message"); // another plain message: not an ask
+  await add(7, "chime");
+  await add(7, "reply"); // a reply may be judged not for the bot
+  await add(7, "reaction", { target: 999 }); // emoji on another message
+  await add(8, "mention"); // someone else
+  await add(7, "mention", { chatId: 2 }); // another chat
+  await add(7, "mention", { threadId: 5 }); // another topic: its history lacks the message
+  expect(await covers()).toBe(false);
+  await add(9, "reaction", { target: base.trigger.messageId }); // anyone's emoji on that message
+  expect(await covers()).toBe(true);
+  // A plain message from an anonymous admin (no requester): only the emoji on it covers it.
+  const anon = (await add(7, "message", { threadId: 8 }))!;
+  const anonCovered = () => hasNewerAskCovering(db, { chatId: 1, runId: anon.id, threadId: 8, requesterId: null, messageId: anon.trigger.messageId });
+  await createRun(db, { chatId: 1, threadId: 8, trigger: { ...trig(), type: "mention", requesterId: null } });
+  expect(await anonCovered()).toBe(false);
+  await add(3, "reaction", { threadId: 8, target: anon.trigger.messageId });
+  expect(await anonCovered()).toBe(true);
+
+  const db2base = (await add(7, "message", { threadId: 5 }))!;
+  expect(await hasNewerAskCovering(db, { chatId: 1, runId: db2base.id, threadId: 5, requesterId: 7, messageId: db2base.trigger.messageId })).toBe(false);
+  await add(7, "mention", { threadId: 5 });
+  expect(await hasNewerAskCovering(db, { chatId: 1, runId: db2base.id, threadId: 5, requesterId: 7, messageId: db2base.trigger.messageId })).toBe(true);
 });
 
 test("renewLease and releaseLease respect ownership", async () => {

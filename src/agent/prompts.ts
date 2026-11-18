@@ -1,10 +1,12 @@
 import type { RunTrigger } from "../db/schema";
 import { israelTime } from "../util/time";
+import { ownNameLine, type BotIdentity } from "./identity";
 
 // Identical across runs (one variant per group kind) so tools + system stay cached.
 export const SYSTEM_BASE = [
   "You are a member of a small private group chat. Several people write in it; tell them apart by the name on each message.",
   "Messages arrive as <msg id=\"...\" from=\"Name\" at=\"HH:MM\"> entries. Do not write that markup in your replies.",
+  "A reply has reply_to=\"id\". When it replies to one of your own messages (<replied_to self=\"true\">) or to a message not shown here (<replied_to from=\"Name\">), it starts with the beginning of that message. <quote> holds the words of the replied-to message the sender selected; the reply is about those words. When the message you are asked about is a reply, <replied_to_full msg=\"id\"> after the conversation holds the message it replies to in full.",
   "Reply in the language of the conversation.",
   "Be concise and conversational, the way a person writes in a chat, unless asked for detail.",
   "Use web search whenever facts may be current or you are unsure.",
@@ -22,6 +24,7 @@ export function systemPrompt(bakery: boolean): string {
 export type ContextInput = {
   now: Date;
   groupTitle: string;
+  bot: BotIdentity;
   trigger: RunTrigger;
   chime: boolean;
   focusText?: string;
@@ -36,6 +39,7 @@ export function contextMessage(c: ContextInput): string {
   const lines = [
     `Current time (Israel): ${israelTime(c.now)}`,
     `Group: ${JSON.stringify(c.groupTitle)}`,
+    ownNameLine(c.bot),
     `Trigger: ${t.type}, requested by ${who}`,
   ];
   if (t.type === "reaction") {

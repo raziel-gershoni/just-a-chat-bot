@@ -17,7 +17,11 @@ const big = (name: string) => bigint(name, { mode: "number" });
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 
 export type RunTrigger = {
-  type: "mention" | "reply" | "reaction" | "chime";
+  /**
+   * `message`: a human message with no tag and no reply to the bot. The run first judges whether
+   * it is meant for the bot and ends silently when it isn't.
+   */
+  type: "mention" | "reply" | "reaction" | "chime" | "message";
   messageId: number;
   targetMessageId: number;
   requesterId: number | null;
@@ -34,8 +38,8 @@ export type RunSent = {
   partsSent?: number;
   /** The sources message that follows the last part when it doesn't fit in it is delivered. */
   tailSent?: boolean;
-  /** A reply-to-bot run was judged to be answered, so a retry doesn't judge it again. */
-  replyJudged?: boolean;
+  /** A reply or message run was judged to be meant for the bot, so a retry doesn't judge it again. */
+  judged?: boolean;
 };
 
 export type RunSnapshot = {
@@ -63,6 +67,23 @@ export type MessageMedia = {
   mime?: string;
   name?: string;
   label: string;
+};
+
+/**
+ * A copy of the message a reply replies to, as Telegram sends it along with the reply. Used when
+ * that message isn't stored (bakery cards and notices, messages pruned or sent before the bot
+ * joined).
+ */
+export type RepliedCopy = {
+  fromName: string;
+  /** Sent by this bot. */
+  isBot: boolean;
+  text: string;
+  entities: unknown[] | null;
+  /** Media label (e.g. "photo"), when it has media. */
+  label: string | null;
+  /** When it was sent (ISO): a copy of a message from before a "forget" stays forgotten. */
+  date: string;
 };
 
 export type RunStatus = "queued" | "running" | "done" | "failed";
@@ -98,6 +119,9 @@ export const messages = pgTable(
     text: text("text").notNull().default(""),
     entities: jsonb("entities").$type<unknown[]>(),
     replyToId: big("reply_to_id"),
+    // The words of the replied-to message the sender selected (Telegram's `quote`), on a reply only.
+    quote: text("quote"),
+    repliedTo: jsonb("replied_to").$type<RepliedCopy>(),
     media: jsonb("media").$type<MessageMedia>(),
     mediaGroupId: text("media_group_id"),
     anthropicFileId: text("anthropic_file_id"),

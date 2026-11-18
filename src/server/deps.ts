@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { Bot } from "grammy";
 import type { CallbackQuery, Update } from "grammy/types";
 import type { WebhookDeps } from "@/app/api/telegram/route";
+import type { BotIdentity } from "@/src/agent/identity";
 import { anthropicLlm } from "@/src/agent/llm";
 import { processRun } from "@/src/agent/loop";
 import { createRunner, type Runner } from "@/src/agent/runner";
@@ -67,7 +68,13 @@ function build(): ServerDeps {
     }
   };
 
-  // botInfo is declared below; processRun resolves it inside its own error handling.
+  // The bot's names for the models. botInfo is declared below; this is only called once runs and
+  // chime checks happen (processRun resolves it inside its own error handling).
+  async function botIdentity(): Promise<BotIdentity> {
+    const me = await botInfo();
+    return { username: me.username, firstName: me.firstName };
+  }
+
   const runner: Runner = createRunner({
     db: database,
     tg: bot.api,
@@ -90,10 +97,7 @@ function build(): ServerDeps {
         token: e.TELEGRAM_BOT_TOKEN,
         fetch,
         models: () => getModels({ db: database, llm, now }),
-        botIdentity: async () => {
-          const me = await botInfo();
-          return { username: me.username, firstName: me.firstName };
-        },
+        botIdentity,
         deleteFiles,
         startTyping: work.startTyping,
       });
@@ -104,6 +108,7 @@ function build(): ServerDeps {
     db: database,
     llm,
     now,
+    botIdentity,
     enqueueRun: async (chatId, trigger) => {
       await createChimeRun(database, chatId, trigger);
       runner.enqueue(chatId);

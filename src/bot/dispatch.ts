@@ -108,7 +108,7 @@ async function onMessage(msg: Message, deps: BotDeps): Promise<void> {
 
   const group = await ensureGroup(deps, chat, msg.from);
   if (!group) return;
-  const row = messageToRow(msg);
+  const row = messageToRow(msg, deps.botId);
   const threadId = row.threadId ?? null;
   if (isSettingsCommand(msg, deps.botUsername)) {
     log("bot.settings_command", { chat_id: chat.id, from_id: msg.from?.id ?? null });

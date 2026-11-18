@@ -1,6 +1,6 @@
 import type { Message } from "grammy/types";
 import type { NewMessage } from "../db/repo/messages";
-import type { MessageMedia } from "../db/schema";
+import type { MessageMedia, RepliedCopy } from "../db/schema";
 
 type OtherLabel = "video" | "voice" | "animation" | "audio" | "document" | "sticker";
 
@@ -73,24 +73,44 @@ export function isServiceMessage(msg: Message): boolean {
   return SERVICE_FIELDS.some((f) => (msg as unknown as Record<string, unknown>)[f] != null);
 }
 
-/** Pure: a Telegram message as a row for the messages table. */
-export function messageToRow(msg: Message): NewMessage {
+// A member's display name, or the title of the chat an anonymous admin or channel posts as.
+function senderName(msg: Message | NonNullable<Message["reply_to_message"]>): string {
   const from = msg.from;
-  const fromName = from
-    ? [from.first_name, from.last_name].filter(Boolean).join(" ")
-    : (msg.sender_chat?.title ?? "");
+  return from ? [from.first_name, from.last_name].filter(Boolean).join(" ") : (msg.sender_chat?.title ?? "");
+}
+
+/**
+ * Pure: a Telegram message as a row for the messages table. `botId` is this bot's user id: a
+ * reply to one of its messages keeps a copy marked as the bot's own.
+ */
+export function messageToRow(msg: Message, botId: number): NewMessage {
+  const from = msg.from;
+  const target = replyTarget(msg);
   return {
     chatId: msg.chat.id,
     messageId: msg.message_id,
     threadId: msg.is_topic_message ? (msg.message_thread_id ?? null) : null,
     fromId: from?.id ?? null,
-    fromName,
+    fromName: senderName(msg),
     isBot: !msg.sender_chat && (from?.is_bot ?? false),
     date: new Date(msg.date * 1000),
     text: msg.text ?? msg.caption ?? "",
     entities: msg.entities ?? msg.caption_entities ?? null,
-    replyToId: replyTarget(msg)?.message_id ?? null,
+    replyToId: target?.message_id ?? null,
+    quote: target ? (msg.quote?.text ?? null) : null,
+    repliedTo: target ? repliedCopy(target, botId) : null,
     media: mediaOf(msg),
     mediaGroupId: msg.media_group_id ?? null,
+  };
+}
+
+function repliedCopy(target: NonNullable<Message["reply_to_message"]>, botId: number): RepliedCopy {
+  return {
+    fromName: senderName(target),
+    isBot: !target.sender_chat && target.from?.id === botId,
+    text: target.text ?? target.caption ?? "",
+    entities: target.entities ?? target.caption_entities ?? null,
+    label: mediaOf(target as Message)?.label ?? null,
+    date: new Date(target.date * 1000).toISOString(),
   };
 }

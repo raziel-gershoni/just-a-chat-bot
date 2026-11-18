@@ -53,6 +53,7 @@ async function setup(script: BetaMessage[] = [YES], opts: { bakery?: boolean } =
     setTimeout: t.setTimeout,
     clearTimeout: t.clearTimeout,
     bakeryConfigured: () => opts.bakery ?? false,
+    botIdentity: async () => ({ username: "justachatbot", firstName: "Razik Chat Bot" }),
   });
   return { db, llm, t, runs, s };
 }
@@ -71,10 +72,18 @@ describe("createChimeScheduler", () => {
     expect(llm.classifyCalls).toHaveLength(1);
   });
 
+  it("tells the classifier the bot's name", async () => {
+    const { db, llm, t, s } = await setup([NO]);
+    await add(db, 1);
+    s.onHumanMessage(1);
+    await t.fire();
+    expect(String(llm.classifyCalls[0]!.system)).toContain('"Razik Chat Bot" (@justachatbot)');
+  });
+
   it("uses the 30 s debounce by default", async () => {
     const db = await testDb();
     const spy = vi.fn(() => 1 as unknown as ReturnType<typeof setTimeout>);
-    const s = createChimeScheduler({ db, llm: fakeLlm(), now: () => NOW, enqueueRun: async () => {}, setTimeout: spy as any, clearTimeout: () => {} });
+    const s = createChimeScheduler({ db, llm: fakeLlm(), now: () => NOW, enqueueRun: async () => {}, setTimeout: spy as any, clearTimeout: () => {}, botIdentity: async () => ({ username: "justachatbot", firstName: "Razik Chat Bot" }) });
     s.onHumanMessage(1);
     expect(spy).toHaveBeenCalledWith(expect.any(Function), 30_000);
   });
@@ -217,6 +226,7 @@ describe("createChimeScheduler", () => {
       db, llm: fakeLlm([], { classify: [YES] }), now: () => NOW,
       enqueueRun: async () => { throw new Error("db down"); },
       setTimeout: t.setTimeout, clearTimeout: t.clearTimeout,
+      botIdentity: async () => ({ username: "justachatbot", firstName: "Razik Chat Bot" }),
     });
     s.onHumanMessage(1);
     await t.fire();

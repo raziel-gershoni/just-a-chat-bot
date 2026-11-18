@@ -160,12 +160,48 @@ export async function hasActiveRun(db: Db, chatId: number, now: Date): Promise<b
   return rows.length > 0;
 }
 
-/** A user-trigger (non-chime) run was created in the chat after `since`. */
+// Runs started by someone asking the bot: a tag, a reply to it, or the trigger emoji. Not a chime
+// and not a `message` run (a plain message the bot only checks).
+const ASKED = sql`${runs.trigger}->>'type' in ('mention', 'reply', 'reaction')`;
+
+/** Someone asked the bot something (a mention, reply or reaction run) in the chat after `since`. */
 export async function hasUserRunSince(db: Db, chatId: number, since: Date): Promise<boolean> {
   const rows = await db
     .select({ id: runs.id })
     .from(runs)
-    .where(and(eq(runs.chatId, chatId), gt(runs.createdAt, since), sql`${runs.trigger}->>'type' <> 'chime'`))
+    .where(and(eq(runs.chatId, chatId), gt(runs.createdAt, since), ASKED))
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
+ * After the run `runId` (a plain message), someone asked the bot in a way that answers that
+ * message too: its writer tagged the bot in the same thread (a mention is never judged, and its
+ * history holds the message), or anyone put the trigger emoji on that very message. A reply to the
+ * bot or a reaction to another message doesn't count: it may never answer this one. A null
+ * requester (anonymous admins and channels share one fake user) matches no mention.
+ */
+export async function hasNewerAskCovering(
+  db: Db,
+  p: { chatId: number; runId: number; threadId: number | null; requesterId: number | null; messageId: number },
+): Promise<boolean> {
+  const type = sql`${runs.trigger}->>'type'`;
+  const rows = await db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.chatId, p.chatId),
+        gt(runs.id, p.runId),
+        p.threadId != null ? eq(runs.threadId, p.threadId) : isNull(runs.threadId),
+        or(
+          p.requesterId != null
+            ? and(sql`${type} = 'mention'`, sql`${runs.trigger}->>'requesterId' = ${String(p.requesterId)}`)
+            : undefined,
+          and(sql`${type} = 'reaction'`, sql`${runs.trigger}->>'targetMessageId' = ${String(p.messageId)}`),
+        ),
+      ),
+    )
     .limit(1);
   return rows.length > 0;
 }

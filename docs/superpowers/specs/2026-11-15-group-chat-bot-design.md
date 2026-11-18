@@ -153,7 +153,7 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
 - Verifies `X-Telegram-Bot-Api-Secret-Token` and is idempotent on `update_id`. Telegram redelivers on failure, and during a deploy overlap either instance may receive an update.
 - Stores every group message:
   - ids, thread id, sender id and display name, date
-  - text or caption, entities, reply-to id
+  - text or caption, entities, reply-to id, and on a reply the words of the replied-to message the sender selected (Telegram's `quote`) plus a copy of the replied-to message as Telegram sends it with the reply (`replied_to`: sender, whether it is this bot, text, media label, date). The copy stands in when that message isn't stored: bakery cards and notices, messages pruned or sent before the bot joined. A copy from before a "forget" stays forgotten.
   - media descriptors: photo (largest-size `file_id`), PDF document, static sticker; other media is stored as a type placeholder only
   - `media_group_id`
 - Edits (`edited_message`) update the stored text. **Edits never trigger a reply.**
@@ -162,10 +162,13 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
   1. a `mention`/`text_mention` entity for the bot
   2. a reply to a stored bot message. Before such a run answers, Haiku judges from the reply, the bot message it replies to and the thread's last few messages whether the reply is meant for the bot or for other people (e.g. quoting the bot to someone). A reply not meant for the bot ends the run silently (logged). When unsure, or when the judge fails, the reply is answered. Mentions and reactions are never judged.
   3. a `message_reaction` where the newly added emoji equals the group's trigger emoji
+  4. any other human message (a `message` run; an album only on its captioned part). Haiku judges right away, from the thread's last few messages, whether it is meant for the bot anyway: it calls the bot by name in any language or script (transliterated, shortened, a nickname, or "bot"), carries on the conversation the bot is part of, whoever started it (a follow-up to its answer), or is a request to nobody in particular that the bot is plainly the one to answer (in bakery groups this includes recipes, quantities and prices). The judge also sees what the bot has posted in the thread since the message: an earlier run whose history already held it may have answered it, and then it is not answered again. One that isn't meant for the bot, or that is unclear, or whose judge fails, ends silently (`skipped: message_not_for_bot` / `skipped: message_judge_failed`); the auto-chime still gets its normal look. A `message` run still queued when its writer tags the bot in the same thread (that run's history holds the message), or when anyone reacts with the trigger emoji to that very message, is skipped (`superseded`); a reply to the bot, a reaction to another message or a tag in another topic doesn't count, since it may never answer this one. Anonymous admins and channels carry no requester id (they all share one fake user), so only the emoji on their message supersedes it. Until it is judged to be meant for the bot, a failing `message` run posts no apology. Logs `run.message_judged` / `run.message_skipped` / `run.message_judge_failed`. Cost: one Haiku call per such message, about 0.03–0.05¢.
 
   For a reaction, the target is the reacted-to stored message and the reactor is the requester. A given message triggers at most one reaction-run, however many people add the emoji.
 
-  The typing indicator starts once a run is going to answer: right away for a mention or a reaction, after the judgement for a reply, never for an auto-chime run.
+  The typing indicator starts once a run is going to answer: right away for a mention or a reaction, after the judgement for a reply or a `message` run, never for an auto-chime run.
+
+  Every model that reads the chat (the answering model, both judges, the chime classifier) is told the bot's Telegram display name and username, and that people may write the name in any language or script, shorten it, misspell it, use a nickname or just say "bot". The name comes from Telegram (`getMe`), never from code.
 - **Albums:** a run triggered on an album message waits about 2 s so all its parts are stored.
 
 ### 6.4 Auto-chime
@@ -186,6 +189,7 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
 - **Turn structure:**
   - Consecutive human messages are merged into one `user` turn, each attributed as `<msg id="…" from="Name" at="HH:MM">…</msg>` (Israel local time).
   - Bot replies become `assistant` text turns.
+  - **Replies** carry `reply_to="id"` and, like Telegram's reply header, what they reply to. A reply to one of the bot's own messages (`<replied_to self="true">`; bot turns have no id, so `reply_to` alone can't name them) or to a message not in the request (`<replied_to from="Name">`, from the stored copy) starts with the first ~100 characters of it; a reply to another message in the request just names it by `reply_to`. The words the sender selected follow as `<quote>…</quote>`; the system prompt says the reply is about those words. Every message renders the same on every run, so the cached prefix holds. When the message the run answers is a reply, the message it replies to follows **in full** as `<replied_to_full msg="id">`, appended after the transcript's cache breakpoint (it is only for this run). The plain transcripts the judges and the chime read show the same as `"Name" (replying to X, quoting «…»)` or `(replying to X: «start…»)`; there the bot is `Bot` and members' names are in quotes, so no display name reads as the bot. The quoted words belong to the new message, so they show even when the replied-to message is from before a "forget" (only its copy is dropped).
   - The conversation must start and end with a user turn.
   - Old web-search citations are stripped to plain text, because the API rejects citations in user content.
 - **Media:**
@@ -196,6 +200,7 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
 - **Per-run context** goes in a **mid-conversation system message** at the end:
   - date/time (Israel, 24h)
   - group title
+  - the bot's own name (see Trigger detection)
   - trigger type and who triggered it
   - which message to focus on, e.g. for reactions: "X reacted 👾 to message #id — respond about that message"
 
@@ -282,7 +287,7 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
 ### 6.9 Data and retention (Neon + drizzle)
 - **Tables:**
   - `groups`: chat id, token, title, settings jsonb, language, active, forget cutoff
-  - `messages`: chat and message ids, thread, sender, text, media jsonb, reply-to, bot flag, Anthropic file id, timestamps
+  - `messages`: chat and message ids, thread, sender, text, media jsonb, reply-to, quoted words (`quote`), bot flag, Anthropic file id, timestamps
   - `runs`, including the lease and the posted proposal ids
   - `processed_updates`
   - `models_cache`
@@ -345,6 +350,7 @@ Startup  ─▶ set webhook · deploy-ping (once per commit) · recover interrup
   - it's cheaper on a cache hit
   - photos add about 1–5k tokens each, and each web search adds 1¢
 - **Auto-chime check:** about 0.03¢.
+- **Untagged-message check:** about 0.03–0.05¢ per human message with no tag (Haiku 5.5 at $0.10 / $0.50 per MTok), roughly $1–3 a month at 100–200 such messages a day.
 - **Total:** a couple chatting actively should spend a few dollars a month on Claude.
 
 ## 7. Later (out of scope now)

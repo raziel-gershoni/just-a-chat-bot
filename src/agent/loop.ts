@@ -9,10 +9,11 @@ import type { BakeryApi } from "../bakery/api";
 import { postCards } from "../bakery/cards";
 import { extractProposals } from "../bakery/proposals";
 import { buildTranscript, pickAttachments, type Attach } from "../conversation/build";
+import { replyTargetOf } from "../conversation/replies";
 import { ensureUploaded } from "../conversation/media";
 import { getGroup, type Group } from "../db/repo/groups";
 import { getMessage, insertMessage, lastBotMessageAt, recentMessages, windowMessages, type StoredMessage } from "../db/repo/messages";
-import { finishRun, hasUserRunSince, releaseLease, saveCheckpoint, type RunRow } from "../db/repo/runs";
+import { finishRun, hasNewerAskCovering, hasUserRunSince, releaseLease, saveCheckpoint, type RunRow } from "../db/repo/runs";
 import type { RunSent, RunSnapshot } from "../db/schema";
 import type { Db } from "../db/types";
 import { t, type Lang } from "../i18n";
@@ -23,9 +24,10 @@ import type { TgApi } from "../telegram/types";
 import { errorText } from "../util/errors";
 import { log } from "../util/log";
 import { answerSources, answerText, runBlocks } from "./answer";
+import type { BotIdentity } from "./identity";
+import { JUDGE_MESSAGES, judgeAddressed, type JudgeKind } from "./judge";
 import type { Llm } from "./llm";
 import { contextMessage } from "./prompts";
-import { judgeReply, REPLY_JUDGE_MESSAGES } from "./reply-judge";
 import { buildParams, newSnapshot } from "./request";
 
 export type LoopDeps = {
@@ -44,15 +46,16 @@ export type LoopDeps = {
   models(): Promise<ModelInfoLite[]>;
   /**
    * The bot's Telegram names (resolved inside the run's error handling): the username is shown as
-   * the sender of its stored answer rows; both tell the reply judge what the bot is called.
+   * the sender of its stored answer rows; both tell the judge and the answering model what the
+   * bot is called.
    */
-  botIdentity(): Promise<{ username: string; firstName: string }>;
+  botIdentity(): Promise<BotIdentity>;
   /** Fire-and-forget; logs its own failures (the same hook the dispatcher uses for pruned rows). */
   deleteFiles(ids: string[]): void;
   /**
    * Turns on the runner's typing indicator for this run (repeat calls do nothing). Called once the
    * run is going to answer: never for a chime run (it often ends silent and nobody is waiting),
-   * and for a reply to the bot only after it was judged to be meant for the bot.
+   * and for a reply to the bot or a plain message only after it was judged to be meant for the bot.
    */
   startTyping(): void;
 };
@@ -132,10 +135,11 @@ async function drive(ctx: Ctx): Promise<void> {
   if (ctx.chime && !ctx.snap && (await chimeIsStale(ctx))) return;
   const me = await deps.botIdentity();
   ctx.botName = me.username;
-  if (run.trigger.type === "reply" && !ctx.snap && !ctx.sent.replyJudged && (await replyNotForBot(ctx, group, me))) return;
+  const kind = judgeKind(run);
+  if (kind && !ctx.snap && !ctx.sent.judged && (await notForBot(ctx, kind, group, settings, me))) return;
   if (!ctx.chime) deps.startTyping();
 
-  let snap = ctx.snap ?? (await buildSnapshot(ctx, group, settings));
+  let snap = ctx.snap ?? (await buildSnapshot(ctx, group, settings, me));
   if (!ctx.snap) {
     ctx.snap = snap;
     await checkpoint(ctx, { snapshot: snap });
@@ -167,33 +171,76 @@ async function drive(ctx: Ctx): Promise<void> {
   await finalize(ctx, snap);
 }
 
-// A reply to one of the bot's messages may be meant for someone else (e.g. quoting the bot to
-// another member). Before anything is built, the classifier judges it from the thread's recent
-// messages; a reply not meant for the bot ends the run silently. When the judge fails, the reply
-// is answered, as before replies were judged. A verdict to answer is saved (sent.replyJudged), so
-// a retry before the snapshot exists doesn't judge again and maybe change its mind.
-async function replyNotForBot(ctx: Ctx, group: Group, bot: { username: string; firstName: string }): Promise<boolean> {
+const judgeKind = (run: RunRow): JudgeKind | null =>
+  run.trigger.type === "reply" || run.trigger.type === "message" ? run.trigger.type : null;
+
+// Nobody is waiting for this run's answer: a chime, or a plain message not yet judged to be meant
+// for the bot. Such a run never apologizes or says it has no answer.
+const nobodyWaiting = (ctx: Ctx) => ctx.chime || (ctx.run.trigger.type === "message" && !ctx.sent.judged);
+
+// Before anything is built, Haiku judges from the thread's recent messages whether the message is
+// meant for the bot (src/agent/judge.ts): a reply to the bot may be meant for someone else (e.g.
+// quoting the bot to another member), and a message with no tag may still be meant for it (its
+// name, a follow-up to its answer, a request only it would answer). One not meant for the bot
+// ends the run silently. When the judge fails, a reply is answered (as before replies were
+// judged) and a plain message is not (the chime still gets its look). A verdict to answer is
+// saved (sent.judged), so a retry before the snapshot exists doesn't judge again and maybe
+// change its mind. Logs run.<kind>_judged / run.<kind>_skipped.
+async function notForBot(ctx: Ctx, kind: JudgeKind, group: Group, settings: GroupSettings, bot: BotIdentity): Promise<boolean> {
   const { run, deps } = ctx;
-  const reply = await getMessage(deps.db, run.chatId, run.trigger.messageId);
-  if (!reply) {
+  // `why` is logged (the judge's own words when it judged); `result` is stored on the run.
+  const skip = async (result: string, why: string = result) => {
+    log(`run.${kind}_skipped`, { ...ids(ctx), reason: why });
+    if (!(await finishRun(deps.db, run.id, deps.owner, "done", `skipped: ${result}`))) throw new LeaseLost();
+    return true;
+  };
+  // While this message waited in the queue, its writer tagged the bot in this thread (that
+  // history holds this message) or someone put the trigger emoji on it: that run answers it.
+  if (
+    kind === "message" &&
+    (await hasNewerAskCovering(deps.db, {
+      chatId: run.chatId,
+      runId: run.id,
+      threadId: run.threadId,
+      requesterId: run.trigger.requesterId,
+      messageId: run.trigger.messageId,
+    }))
+  ) {
+    return skip("superseded");
+  }
+  const message = await getMessage(deps.db, run.chatId, run.trigger.messageId);
+  if (!message) {
+    if (kind === "message") return skip("message_not_stored");
     log("run.reply_judge_skipped", { ...ids(ctx), reason: "reply_not_stored" });
     return false;
   }
   const visible = (r: StoredMessage | null) => (r && (!group.forgetBefore || r.date > group.forgetBefore) ? r : null);
   const recent = (
-    await recentMessages(deps.db, run.chatId, REPLY_JUDGE_MESSAGES, { threadId: run.threadId, upToSeq: reply.seq })
+    await recentMessages(deps.db, run.chatId, JUDGE_MESSAGES, { threadId: run.threadId, upToSeq: message.seq })
   ).filter((r) => visible(r));
-  const repliedTo = reply.replyToId != null ? visible(await getMessage(deps.db, run.chatId, reply.replyToId)) : null;
-  const j = await judgeReply(deps.llm, { bot, recent, repliedTo, reply }, ids(ctx));
-  if (j) log("run.reply_judged", { ...ids(ctx), addressed: j.addressed, reason: j.reason });
-  if (!j || j.addressed) {
-    ctx.sent = { ...ctx.sent, replyJudged: true };
+  const target = message.replyToId != null ? visible(await getMessage(deps.db, run.chatId, message.replyToId)) : null;
+  const repliedTo = replyTargetOf(message, new Map(target ? [[target.messageId, target]] : []), group.forgetBefore);
+  // What the bot has posted in the thread since this message: an earlier run (whose history
+  // already held this message) may have answered it.
+  const since =
+    kind === "message"
+      ? (await recentMessages(deps.db, run.chatId, JUDGE_MESSAGES, { threadId: run.threadId })).filter(
+          (r) => r.isBot && r.seq > message.seq,
+        )
+      : [];
+  const bakery = settings.bakery && deps.bakeryCfg !== null;
+  const j = await judgeAddressed(
+    deps.llm,
+    { kind, bot, bakery, recent, repliedTo, message, since, forgetBefore: group.forgetBefore },
+    ids(ctx),
+  );
+  if (j) log(`run.${kind}_judged`, { ...ids(ctx), addressed: j.addressed, reason: j.reason });
+  if (j ? j.addressed : kind === "reply") {
+    ctx.sent = { ...ctx.sent, judged: true };
     await checkpoint(ctx, { sent: ctx.sent });
     return false;
   }
-  log("run.reply_skipped", { ...ids(ctx), reason: j.reason });
-  if (!(await finishRun(deps.db, run.id, deps.owner, "done", "skipped: reply_not_for_bot"))) throw new LeaseLost();
-  return true;
+  return j ? skip(`${kind}_not_for_bot`, j.reason) : skip(`${kind}_judge_failed`);
 }
 
 // A chime run that waited behind other work is dropped when the bot has spoken since it was
@@ -238,7 +285,7 @@ async function focusRowsOutsideWindow(
   return extra.sort((a, b) => a.seq - b.seq);
 }
 
-async function buildSnapshot(ctx: Ctx, group: Group, settings: GroupSettings): Promise<RunSnapshot> {
+async function buildSnapshot(ctx: Ctx, group: Group, settings: GroupSettings, bot: BotIdentity): Promise<RunSnapshot> {
   const { run, deps } = ctx;
   const trigger = run.trigger;
   const rows = await windowMessages(deps.db, {
@@ -273,7 +320,14 @@ async function buildSnapshot(ctx: Ctx, group: Group, settings: GroupSettings): P
     if (fileId) attach.set(row.messageId, { type: row.media?.kind === "pdf" ? "document" : "image", fileId });
   }
   const noNewer = t(ctx.lang, "noNewerMessages");
-  const transcript = buildTranscript(turnRows, { attach, noNewer, leading: leadRows });
+  // The message the run answers is followed by what it replies to, in full.
+  const transcript = buildTranscript(turnRows, {
+    attach,
+    noNewer,
+    leading: leadRows,
+    focus: trigger.targetMessageId,
+    forgetBefore: group.forgetBefore,
+  });
   const models = await deps.models();
   const snap = newSnapshot({
     settings,
@@ -281,7 +335,7 @@ async function buildSnapshot(ctx: Ctx, group: Group, settings: GroupSettings): P
     bakeryAvailable: deps.bakeryCfg !== null,
     chime: ctx.chime,
     transcript,
-    context: contextMessage({ now: deps.now(), groupTitle: group.title, trigger, chime: ctx.chime }),
+    context: contextMessage({ now: deps.now(), groupTitle: group.title, bot, trigger, chime: ctx.chime }),
   });
   log("run.built", {
     ...ids(ctx),
@@ -524,7 +578,8 @@ async function onError(ctx: Ctx, err: unknown): Promise<void> {
 
 // Ends the run as failed. Cards for proposals already made and the bakery notice (after an
 // answer) still go out (best effort), and
-// whoever is waiting gets an apology, unless an answer already went out or nobody asked (chime).
+// whoever is waiting gets an apology, unless an answer already went out or nobody is waiting (a
+// chime, or a plain message not judged to be meant for the bot).
 // When only some answer parts went out, the apology would sit under a half-visible answer, so
 // the localized "cut short" notice goes out instead.
 async function fail(ctx: Ctx, reason: string): Promise<void> {
@@ -545,7 +600,7 @@ async function fail(ctx: Ctx, reason: string): Promise<void> {
   }
   if (!(await finishRun(deps.db, run.id, deps.owner, "failed", reason))) throw new LeaseLost();
   log("run.failed", { ...ids(ctx), reason, chime: ctx.chime, answered: ctx.sent.answered });
-  if (ctx.chime || ctx.sent.answered) return;
+  if (nobodyWaiting(ctx) || ctx.sent.answered) return;
   const partial = (ctx.sent.partsSent ?? 0) > 0;
   try {
     await sendText(deps.tg, run.chatId, t(ctx.lang, partial ? "cutShort" : "runFailed"), {

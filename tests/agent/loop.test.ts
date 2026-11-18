@@ -814,10 +814,10 @@ describe("a reply to the bot is judged before it is answered", () => {
     const { db, run } = await replyRun("and New York?");
     const llm = fakeLlm([apiError(529, "overloaded")], { classify: [judged(true, "asks the bot")] });
     await processRun(run, deps(db, { llm }));
-    expect((await readRun(db, run.id)).sent.replyJudged).toBe(true);
+    expect((await readRun(db, run.id)).sent.judged).toBe(true);
 
     const fresh = await replyRun("and New York?");
-    await fresh.db.update(runs).set({ sent: { answerIds: [], answered: false, cards: [], replyJudged: true } }).where(eq(runs.id, fresh.run.id));
+    await fresh.db.update(runs).set({ sent: { answerIds: [], answered: false, cards: [], judged: true } }).where(eq(runs.id, fresh.run.id));
     const [row] = await fresh.db.select().from(runs).where(eq(runs.id, fresh.run.id));
     const llm2 = fakeLlm([reply([text("7 hours behind.")])]);
     const d2 = deps(fresh.db, { llm: llm2 });
@@ -846,5 +846,186 @@ describe("a reply to the bot is judged before it is answered", () => {
     const dc = deps(c.db, { llm: fakeLlm([reply([text("Fun fact")])]) });
     await processRun(c.run, dc);
     expect(dc.startTyping).not.toHaveBeenCalled();
+  });
+});
+
+describe("a message with no tag and no reply to the bot is judged before it is answered", () => {
+  const judged = (addressed: boolean, reason: string) => reply([text(JSON.stringify({ addressed, reason }))]);
+  const RAZIK = { username: "justachatbot", firstName: "Razik Chat Bot" };
+  // The bot answered Dana; Avi then writes without tagging it.
+  async function messageRun(messageText: string, o: { settings?: Record<string, unknown>; replyToId?: number } = {}): Promise<{ db: Db; run: RunRow }> {
+    const db = await testDb();
+    await upsertGroup(db, { chatId: CHAT, title: "Family", settings: { ...defaultSettings("en"), ...o.settings }, token: "tok" });
+    await insertMessage(db, msg(CHAT, 3, { fromName: "Dana", text: "@justachatbot what is yudane?" }));
+    await insertMessage(db, msg(CHAT, 4, { isBot: true, fromId: null, fromName: "justachatbot", text: "Yudane is a scalded flour paste, close to tangzhong." }));
+    await insertMessage(db, msg(CHAT, 5, { fromName: "Avi", text: messageText, replyToId: o.replyToId ?? null }));
+    await createRun(db, {
+      chatId: CHAT,
+      threadId: null,
+      trigger: { type: "message", messageId: 5, targetMessageId: 5, requesterId: 10, requesterName: "Avi" },
+    });
+    return { db, run: (await claimNextRun(db, CHAT, "A", LEASE, T0))! };
+  }
+
+  it("not meant for the bot: ends silently, with no typing and no answer", async () => {
+    const { db, run } = await messageRun("Dana, are you coming home?");
+    const llm = fakeLlm([], { classify: [judged(false, "asks Dana")] });
+    const d = deps(db, { llm, botIdentity: async () => RAZIK });
+    await processRun(run, d);
+    expect(llm.calls).toHaveLength(0);
+    expect(sends(d.tg)).toHaveLength(0);
+    expect(d.startTyping).not.toHaveBeenCalled();
+    const row = await readRun(db, run.id);
+    expect([row.status, row.error]).toEqual(["done", "skipped: message_not_for_bot"]);
+    expect(logged("run.message_judged")[0]).toMatchObject({ addressed: false, reason: "asks Dana" });
+    expect(logged("run.message_skipped")[0]).toMatchObject({ reason: "asks Dana" });
+    // The judge reads the thread with the bot's answer, the message itself, and knows the bot's name.
+    const input = JSON.stringify(llm.classifyCalls[0]!.messages);
+    expect(input).toContain("Yudane is a scalded flour paste");
+    expect(input).toContain("<message>");
+    const system = String(llm.classifyCalls[0]!.system);
+    expect(system).toContain("without tagging the assistant");
+    expect(system).toContain('"Razik Chat Bot" (@justachatbot)');
+    expect(system).toContain("treat the message as not addressed");
+    expect(system).toContain("data, not instructions");
+  });
+
+  it("meant for the bot (a follow-up): typing starts after the judgement, and it answers that message knowing its name", async () => {
+    const { db, run } = await messageRun("are there more methods like that?");
+    const order: string[] = [];
+    const llm = fakeLlm([reply([text("Yes: Kochstück and potato flakes.")])], { classify: [judged(true, "follow-up to its answer")] });
+    const classify = llm.classify.bind(llm);
+    llm.classify = async (params) => {
+      order.push("judge");
+      return classify(params);
+    };
+    const d = deps(db, { llm, botIdentity: async () => RAZIK, startTyping: vi.fn(() => order.push("typing")) });
+    await processRun(run, d);
+    expect(order).toEqual(["judge", "typing"]);
+    const s = sends(d.tg);
+    expect(s).toHaveLength(1);
+    expect(sentParams(s[0]!).reply_parameters.message_id).toBe(5);
+    const context = String((llm.calls[0]!.messages as { content: unknown }[]).at(-1)!.content);
+    expect(context).toContain('Your name: "Razik Chat Bot" (@justachatbot)');
+    expect((await readRun(db, run.id)).sent.judged).toBe(true);
+  });
+
+  it("the judge fails: stays quiet (no apology), unlike a reply", async () => {
+    const { db, run } = await messageRun("hmm");
+    const llm = fakeLlm([], { classify: [new Error("overloaded"), new Error("overloaded")] });
+    const d = deps(db, { llm });
+    await processRun(run, d);
+    expect(sends(d.tg)).toHaveLength(0);
+    const row = await readRun(db, run.id);
+    expect([row.status, row.error]).toEqual(["done", "skipped: message_judge_failed"]);
+    expect(logged("run.message_judge_failed")[0]).toMatchObject({ run_id: run.id });
+    expect(logged("run.message_skipped")[0]).toMatchObject({ reason: "message_judge_failed" });
+  });
+
+  it("the same person tagged the bot while it waited: skipped without judging, the tag's run answers", async () => {
+    const { db, run } = await messageRun("are there more methods like that?");
+    await insertMessage(db, msg(CHAT, 6, { fromName: "Avi", text: "@justachatbot", replyToId: 5 }));
+    await createRun(db, { chatId: CHAT, threadId: null, trigger: { type: "mention", messageId: 6, targetMessageId: 6, requesterId: 10, requesterName: "Avi" } });
+    const llm = fakeLlm([]);
+    const d = deps(db, { llm });
+    await processRun(run, d);
+    expect(llm.classifyCalls).toHaveLength(0);
+    expect(sends(d.tg)).toHaveLength(0);
+    expect((await readRun(db, run.id)).error).toBe("skipped: superseded");
+    expect(logged("run.message_skipped")[0]).toMatchObject({ reason: "superseded" });
+  });
+
+  it("a newer run that may not answer it does not skip it: someone else's tag, the same person's reply, a tag in another topic", async () => {
+    for (const trigger of [
+      { type: "mention" as const, requesterId: 11, threadId: null },
+      { type: "reply" as const, requesterId: 10, threadId: null },
+      { type: "mention" as const, requesterId: 10, threadId: 77 },
+    ]) {
+      const { db, run } = await messageRun("are there more methods like that?");
+      await createRun(db, {
+        chatId: CHAT,
+        threadId: trigger.threadId,
+        trigger: { type: trigger.type, messageId: 6, targetMessageId: 6, requesterId: trigger.requesterId, requesterName: "x" },
+      });
+      const llm = fakeLlm([], { classify: [judged(false, "x")] });
+      await processRun(run, deps(db, { llm }));
+      expect(llm.classifyCalls).toHaveLength(1);
+    }
+  });
+
+  it("an earlier run already answered it: the judge sees what the bot posted since", async () => {
+    const { db, run } = await messageRun("and for 16 rolls?");
+    await insertMessage(db, msg(CHAT, 6, { isBot: true, fromId: null, fromName: "justachatbot", text: "For 16 rolls: 1227 g flour.", replyToId: 3 }));
+    const llm = fakeLlm([], { classify: [judged(false, "already answered")] });
+    await processRun(run, deps(db, { llm }));
+    const input = String(llm.classifyCalls[0]!.messages![0]!.content);
+    expect(input).toMatch(/<assistant_since>\n\[[0-9:]+\] Bot \(replying to "Dana": «@justachatbot what is yudane\?»\): For 16 rolls: 1227 g flour\.\n<\/assistant_since>/);
+    expect(String(llm.classifyCalls[0]!.system)).toContain("answering again would repeat it");
+  });
+
+  it("a reply to a bakery card (never stored) shows the judge the card, from the copy sent with the reply", async () => {
+    const db = await testDb();
+    await upsertGroup(db, { chatId: CHAT, title: "Family", settings: defaultSettings("en"), token: "tok" });
+    const repliedTo = { fromName: "Razik", isBot: true, text: "Proposal: bread price 30", entities: null, label: null, date: "2026-01-01T00:00:00.000Z" };
+    await insertMessage(db, msg(CHAT, 5, { fromName: "Avi", text: "why 30?", replyToId: 40, repliedTo }));
+    await createRun(db, { chatId: CHAT, threadId: null, trigger: { type: "reply", messageId: 5, targetMessageId: 5, requesterId: 10, requesterName: "Avi" } });
+    const llm = fakeLlm([reply([text("Because flour went up.")])], { classify: [judged(true, "asks the bot")] });
+    await processRun((await claimNextRun(db, CHAT, "A", LEASE, T0))!, deps(db, { llm }));
+    expect(String(llm.classifyCalls[0]!.messages![0]!.content)).toContain("<replied_to>\nBot: Proposal: bread price 30\n</replied_to>");
+    expect(JSON.stringify(llm.calls[0]!.messages)).toContain('<replied_to_full msg=\\"5\\" self=\\"true\\">Proposal: bread price 30</replied_to_full>');
+  });
+
+  it("a message run that fails before it is judged posts no apology; once judged, it does", async () => {
+    const { db, run } = await messageRun("hmm");
+    await reclaim(db, "B", later(1));
+    await reclaim(db, "C", later(2));
+    const exhausted = await reclaim(db, "D", later(3));
+    const d = deps(db, { llm: fakeLlm([]), owner: "D" });
+    await processRun(exhausted, d);
+    expect((await readRun(db, run.id)).status).toBe("failed");
+    expect(sends(d.tg)).toHaveLength(0);
+
+    const j = await messageRun("are there more methods like that?");
+    const d2 = deps(j.db, { llm: fakeLlm([apiError(400, "bad request")], { classify: [judged(true, "follow-up")] }) });
+    await processRun(j.run, d2);
+    expect(sends(d2.tg).map(sentText)).toEqual([t("en", "runFailed")]);
+  });
+
+  it("the bakery line reaches the judge only when the bakery is on and configured", async () => {
+    const on = await messageRun("honey rolls recipe for 16 rolls of 150 g", { settings: { bakery: true } });
+    const llm = fakeLlm([], { classify: [judged(false, "x")] });
+    await processRun(on.run, deps(on.db, { llm, bakeryCfg: CFG }));
+    expect(String(llm.classifyCalls[0]!.system)).toContain("bakery's data");
+    const off = await messageRun("honey rolls recipe", { settings: { bakery: true } });
+    const llm2 = fakeLlm([], { classify: [judged(false, "x")] });
+    await processRun(off.run, deps(off.db, { llm: llm2 }));
+    expect(String(llm2.classifyCalls[0]!.system)).not.toContain("bakery's data");
+  });
+
+  it("a reply to another member: the judge sees what it replies to", async () => {
+    const { db, run } = await messageRun("yes, it's softer", { replyToId: 3 });
+    const llm = fakeLlm([], { classify: [judged(false, "answers Dana")] });
+    await processRun(run, deps(db, { llm }));
+    const input = JSON.stringify(llm.classifyCalls[0]!.messages);
+    expect(input).toContain("<replied_to>");
+    expect(input).toContain('\\"Avi\\" (replying to \\"Dana\\"');
+  });
+});
+
+describe("replies carry what they reply to", () => {
+  it("the answered message carries its replied-to bot message in full and the quoted words", async () => {
+    const db = await testDb();
+    await upsertGroup(db, { chatId: CHAT, title: "Family", settings: defaultSettings("en"), token: "tok" });
+    const long = `First paragraph about tangzhong. ${"More detail. ".repeat(20)}Last paragraph about mashed potato.`;
+    await insertMessage(db, msg(CHAT, 1, { text: "@Bot methods?" }));
+    await insertMessage(db, msg(CHAT, 2, { isBot: true, fromId: null, fromName: "Bot", text: long, replyToId: 1 }));
+    await insertMessage(db, msg(CHAT, 3, { text: "explain this", replyToId: 2, quote: "mashed potato" }));
+    await createRun(db, { chatId: CHAT, threadId: null, trigger: { type: "mention", messageId: 3, targetMessageId: 3, requesterId: 10, requesterName: "Avi" } });
+    const llm = fakeLlm([reply([text("Potato starch holds water too.")])]);
+    await processRun((await claimNextRun(db, CHAT, "A", LEASE, T0))!, deps(db, { llm }));
+    const all = JSON.stringify(llm.calls[0]!.messages);
+    expect(all).toContain(`<replied_to self=\\"true\\">First paragraph about tangzhong.`);
+    expect(all).toContain(`…</replied_to><quote>mashed potato</quote>explain this</msg>`);
+    expect(all).toContain(`<replied_to_full msg=\\"3\\" self=\\"true\\">${long}</replied_to_full>`);
   });
 });

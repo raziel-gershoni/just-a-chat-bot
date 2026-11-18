@@ -1,3 +1,4 @@
+import type { BotIdentity } from "../agent/identity";
 import type { Llm } from "../agent/llm";
 import { bakeryConfig } from "../bakery/config";
 import { getGroup } from "../db/repo/groups";
@@ -23,6 +24,8 @@ export type ChimeSchedulerDeps = {
   clearTimeout?: typeof clearTimeout;
   /** Whether the bakery server is configured; defaults to the process env. */
   bakeryConfigured?: () => boolean;
+  /** The bot's names, so the classifier knows what people call it. */
+  botIdentity(): Promise<BotIdentity>;
 };
 
 export function createChimeScheduler(deps: ChimeSchedulerDeps): { onHumanMessage(chatId: number): void; stop(): void } {
@@ -78,7 +81,12 @@ export function createChimeScheduler(deps: ChimeSchedulerDeps): { onHumanMessage
 
     const d = await classifyChime(
       { llm: deps.llm },
-      { transcript: chimeTranscript(rows), eagerness: settings.chime.eagerness, bakery: settings.bakery && bakeryConfigured() },
+      {
+        transcript: chimeTranscript(rows, { forgetBefore: group.forgetBefore }),
+        eagerness: settings.chime.eagerness,
+        bakery: settings.bakery && bakeryConfigured(),
+        bot: await deps.botIdentity(),
+      },
     );
     if (!d) return skip(chatId, "classifier_failed");
     log("chime.decision", { chatId, chime: d.chime, reason: d.reason });

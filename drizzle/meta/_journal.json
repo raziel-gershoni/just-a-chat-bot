@@ -22,6 +22,13 @@
       "when": 1794856803512,
       "tag": "0002_group_alt_token",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1795034822227,
+      "tag": "0003_message_reply_context",
+      "breakpoints": true
     }
   ]
 }
