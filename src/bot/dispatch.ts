@@ -3,6 +3,7 @@ import type { Env } from "../config/env";
 import { getGroup, markAdminHintSent, migrateChat, setGroupActive } from "../db/repo/groups";
 import { getMessage, insertMessage, updateMessageText } from "../db/repo/messages";
 import { createRun } from "../db/repo/runs";
+import type { RunTrigger } from "../db/schema";
 import type { Db } from "../db/types";
 import { t } from "../i18n";
 import { parseSettings } from "../settings/schema";
@@ -124,26 +125,40 @@ async function onMessage(msg: Message, deps: BotDeps): Promise<void> {
   if (stored?.pruned.length) deps.deleteFiles(stored.pruned);
   if (!stored) log("bot.message_exists", { chat_id: chat.id, message_id: msg.message_id });
 
-  const trigger = detectTrigger(msg, deps);
-  if (trigger) {
-    const run = await createRun(deps.db, {
+  const runFor = (type: RunTrigger["type"]) =>
+    createRun(deps.db, {
       chatId: chat.id,
       threadId,
       trigger: {
-        type: trigger,
+        type,
         messageId: msg.message_id,
         targetMessageId: msg.message_id,
-        requesterId: msg.from?.id ?? null,
+        // Anonymous admins and channels all post as one fake user: no person to tell apart.
+        requesterId: msg.sender_chat ? null : (msg.from?.id ?? null),
         requesterName: msg.from ? fullName(msg.from) : null,
       },
     });
+  const wait = msg.media_group_id ? ALBUM_WAIT_MS : 0;
+
+  const trigger = detectTrigger(msg, deps);
+  if (trigger) {
+    const run = await runFor(trigger);
     if (!run) return ignored("run_exists", { chat_id: chat.id, message_id: msg.message_id, trigger });
-    deps.enqueue(chat.id, msg.media_group_id ? ALBUM_WAIT_MS : 0);
+    deps.enqueue(chat.id, wait);
     return;
   }
-  if (!stored) return ignored("duplicate_message", { chat_id: chat.id, message_id: msg.message_id });
-  if (parseSettings(group.settings).chime.enabled) deps.chime.onHumanMessage(chat.id);
+  // No tag and no reply to the bot. The chime ping comes first: a redelivery (the first delivery
+  // failed below) skips it, so it must not depend on what follows.
+  if (!stored) ignored("duplicate_message", { chat_id: chat.id, message_id: msg.message_id });
+  else if (parseSettings(group.settings).chime.enabled) deps.chime.onHumanMessage(chat.id);
   else ignored("no_trigger_chime_off", { chat_id: chat.id });
+  // A `message` run judges whether the message is meant for the bot anyway (its name, a
+  // follow-up to its answer) and ends silently when it isn't. Like a trigger, it is created on a
+  // redelivery too (the unique index keeps it to one). An album is judged once, on the part with
+  // the caption; captionless parts are skipped.
+  if (!row.text && msg.media_group_id) return;
+  if (await runFor("message")) deps.enqueue(chat.id, wait);
+  else ignored("message_run_exists", { chat_id: chat.id, message_id: msg.message_id });
 }
 
 async function onEdited(msg: Message, deps: BotDeps): Promise<void> {

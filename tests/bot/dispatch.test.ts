@@ -21,6 +21,7 @@ const onCallback = vi.fn(async () => {});
 
 const sent = () => tg.calls.filter((c) => c.method === "sendMessage");
 const allRuns = () => db.select().from(runs);
+const runTypes = async () => (await allRuns()).map((r) => `${r.trigger.type}:${r.trigger.messageId}`);
 let logSpy: MockInstance;
 const logged = (event: string) =>
   logSpy.mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>).filter((l) => l.event === event);
@@ -170,7 +171,7 @@ describe("message", () => {
     }
     expect((buttons[0]!.args[2] as { reply_parameters: { message_id: number } }).reply_parameters.message_id).toBe(2);
     expect((buttons[1]!.args[2] as { message_thread_id: number }).message_thread_id).toBe(9);
-    expect(await allRuns()).toHaveLength(0);
+    expect(await runTypes()).toEqual(["message:1"]); // only the plain message before the commands
     expect(onHumanMessage).not.toHaveBeenCalled();
   });
 
@@ -179,7 +180,7 @@ describe("message", () => {
     const text = "/settings@OtherBot";
     await handleUpdate(msgUpdate(groupMsg(-100, 2, { text, entities: [{ type: "bot_command", offset: 0, length: text.length }] })), deps);
     expect(sent()).toHaveLength(1); // only the welcome
-    expect(await allRuns()).toHaveLength(0);
+    expect(await runTypes()).toEqual(["message:1", "message:2"]); // a plain message like any other
   });
 
   it("service messages are not stored and don't ping the chime", async () => {
@@ -197,7 +198,7 @@ describe("message", () => {
     const root = groupMsg(-100, 9, { from: BOT });
     await handleUpdate(msgUpdate(groupMsg(-100, 10, { is_topic_message: true, message_thread_id: 9, reply_to_message: root })), deps);
     expect((await getMessage(db, -100, 10))!.replyToId).toBeNull();
-    expect(await allRuns()).toHaveLength(0);
+    expect(await runTypes()).toEqual(["message:10"]);
   });
 
   it("a duplicate delivery gives one row and one run", async () => {
@@ -237,14 +238,41 @@ describe("message", () => {
     expect((await allRuns())[0]!.trigger.type).toBe("reply");
   });
 
-  it("a plain message pings the chime when enabled, not when disabled", async () => {
+  it("a plain message creates a message run (judged later) and pings the chime when enabled, not when disabled", async () => {
     await handleUpdate(msgUpdate(groupMsg(-100, 1)), deps);
     expect(onHumanMessage).toHaveBeenCalledWith(-100);
-    expect(await allRuns()).toHaveLength(0);
+    const [run] = await allRuns();
+    expect(run!.trigger).toEqual({ type: "message", messageId: 1, targetMessageId: 1, requesterId: 10, requesterName: expect.any(String) });
+    expect(enqueue).toHaveBeenCalledWith(-100, 0);
     onHumanMessage.mockClear();
     await db.update(groups).set({ settings: { chime: { enabled: false } } }).where(eq(groups.chatId, -100));
     await handleUpdate(msgUpdate(groupMsg(-100, 2)), deps);
     expect(onHumanMessage).not.toHaveBeenCalled();
+    expect(await runTypes()).toEqual(["message:1", "message:2"]); // judged whether the chime is on or off
+  });
+
+  it("a redelivered plain message gives one message run and one chime ping", async () => {
+    const u = msgUpdate(groupMsg(-100, 1));
+    await handleUpdate(u, deps);
+    await handleUpdate(u, deps);
+    expect(await runTypes()).toEqual(["message:1"]);
+    expect(onHumanMessage).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("a reply to another member is a message run, not a reply run", async () => {
+    await handleUpdate(msgUpdate(groupMsg(-100, 2, { reply_to_message: groupMsg(-100, 1, { from: user(11) }) })), deps);
+    expect(await runTypes()).toEqual(["message:2"]);
+  });
+
+  it("an album is judged once, on its captioned part, after the album wait", async () => {
+    await handleUpdate(msgUpdate(groupMsg(-100, 1, { text: undefined, caption: "which is better?", media_group_id: "alb", photo: [{ file_id: "a", width: 1, height: 1 }] })), deps);
+    await handleUpdate(msgUpdate(groupMsg(-100, 2, { text: undefined, media_group_id: "alb", photo: [{ file_id: "b", width: 1, height: 1 }] })), deps);
+    expect(await runTypes()).toEqual(["message:1"]);
+    expect(enqueue).toHaveBeenCalledWith(-100, 2000);
+    // A single photo with no caption is still judged (e.g. a photo the bot asked for).
+    await handleUpdate(msgUpdate(groupMsg(-100, 3, { text: undefined, photo: [{ file_id: "c", width: 1, height: 1 }] })), deps);
+    expect(await runTypes()).toEqual(["message:1", "message:3"]);
   });
 
   it("ignores messages from bots", async () => {
@@ -261,7 +289,8 @@ describe("message", () => {
     const row = await getMessage(db, -100, 1);
     expect(row).not.toBeNull();
     expect(row!.isBot).toBe(false);
-    expect((await allRuns())[0]!.trigger.type).toBe("mention");
+    // All anonymous admins share the fake user: the run names no requester to tell them apart by.
+    expect((await allRuns())[0]!.trigger).toMatchObject({ type: "mention", requesterId: null });
   });
 
   it("answers a private message with groupsOnly in the sender's language", async () => {
@@ -320,10 +349,11 @@ describe("message", () => {
 describe("edited_message", () => {
   it("updates the text, never starts a run", async () => {
     await handleUpdate(msgUpdate(groupMsg(-100, 1)), deps);
+    enqueue.mockClear();
     const edited = groupMsg(-100, 1, { text: "yo @MyBot", entities: [{ type: "mention", offset: 3, length: 6 }] });
     await handleUpdate({ update_id: 500, edited_message: edited } as never, deps);
     expect((await getMessage(db, -100, 1))!.text).toBe("yo @MyBot");
-    expect(await allRuns()).toHaveLength(0);
+    expect(await runTypes()).toEqual(["message:1"]); // the original message's run only
     expect(enqueue).not.toHaveBeenCalled();
   });
 
@@ -335,28 +365,33 @@ describe("edited_message", () => {
 });
 
 describe("message_reaction", () => {
-  beforeEach(async () => { await handleUpdate(msgUpdate(groupMsg(-100, 1)), deps); });
+  // The plain message reacted to has its own message run; these tests count reaction runs.
+  const reactionRuns = async () => (await allRuns()).filter((r) => r.trigger.type === "reaction");
+  beforeEach(async () => {
+    await handleUpdate(msgUpdate(groupMsg(-100, 1)), deps);
+    enqueue.mockClear();
+  });
 
   it("two users reacting give one run", async () => {
     await handleUpdate(reactionUpdate(-100, 1, user(11, { first_name: "Dana" }), [], ["👾"]), deps);
     await handleUpdate(reactionUpdate(-100, 1, user(12), [], ["👾"]), deps);
-    const rows = await allRuns();
+    const rows = await reactionRuns();
     expect(rows).toHaveLength(1);
     expect(rows[0]!.trigger).toMatchObject({ type: "reaction", targetMessageId: 1, requesterId: 11, requesterName: "Dana", emoji: "👾" });
     expect(enqueue).toHaveBeenCalledTimes(1);
   });
   it("a non-trigger emoji gives no run", async () => {
     await handleUpdate(reactionUpdate(-100, 1, user(11), [], ["👍"]), deps);
-    expect(await allRuns()).toHaveLength(0);
+    expect(await reactionRuns()).toHaveLength(0);
   });
   it("a reaction to an unstored message gives no run", async () => {
     await handleUpdate(reactionUpdate(-100, 999, user(11), [], ["👾"]), deps);
-    expect(await allRuns()).toHaveLength(0);
+    expect(await reactionRuns()).toHaveLength(0);
   });
   it("an inactive group gives no run", async () => {
     await db.update(groups).set({ active: false }).where(eq(groups.chatId, -100));
     await handleUpdate(reactionUpdate(-100, 1, user(11), [], ["👾"]), deps);
-    expect(await allRuns()).toHaveLength(0);
+    expect(await reactionRuns()).toHaveLength(0);
   });
 });
 

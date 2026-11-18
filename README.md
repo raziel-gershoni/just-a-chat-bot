@@ -1,6 +1,6 @@
 # just-a-chat-bot
 
-A Claude-powered Telegram group bot. It reads every message in the groups it is in and replies when it is mentioned, replied to, or when someone reacts with the trigger emoji. It can also chime in on its own (optional). It can search and fetch web pages, and it can talk to the bakery MCP server, where changes are shown as proposal cards that only the owner can approve with buttons. A Telegram Mini App lets any member of a group change that group's settings (only the owner sees the bakery switch).
+A Claude-powered Telegram group bot. It reads every message in the groups it is in and replies when it is mentioned, replied to, or when someone reacts with the trigger emoji, and also to an untagged message that is clearly meant for it (its name in any language, or a follow-up to its answer). It can also chime in on its own (optional). It can search and fetch web pages, and it can talk to the bakery MCP server, where changes are shown as proposal cards that only the owner can approve with buttons. A Telegram Mini App lets any member of a group change that group's settings (only the owner sees the bakery switch).
 
 One always-on Next.js 16 server on Railway, Neon Postgres, no queue service. Design: `docs/superpowers/specs/2026-11-15-group-chat-bot-design.md`.
 

@@ -26,6 +26,7 @@ const post = (body: unknown) =>
 let db: Db;
 let enqueue: ReturnType<typeof vi.fn<(chatId: number, delayMs?: number) => void>>;
 let webhook: (body: unknown) => Promise<number>;
+let onHumanMessage: ReturnType<typeof vi.fn<(chatId: number) => void>>;
 let logSpy: MockInstance;
 
 beforeEach(async () => {
@@ -34,11 +35,12 @@ beforeEach(async () => {
   const tg = fakeTg();
   tg.members.set(OWNER_ID, "member");
   enqueue = vi.fn<(chatId: number, delayMs?: number) => void>();
+  onHumanMessage = vi.fn<(chatId: number) => void>();
   const deps: BotDeps = {
     db, tg,
     env: { TELEGRAM_OWNER_ID: OWNER_ID },
     botId: BOT.id, botUsername: "MyBot",
-    enqueue, chime: { onHumanMessage: vi.fn() }, onCallback: vi.fn(async () => {}),
+    enqueue, chime: { onHumanMessage }, onCallback: vi.fn(async () => {}),
     deleteFiles: vi.fn(), now: () => new Date(),
   };
   webhook = async (body) => (await handleWebhook(post(body), { secret: SECRET, db, handle: (u) => handleUpdate(u, deps) })).status;
@@ -77,6 +79,19 @@ describe("webhook idempotency", () => {
     expect(enqueue).toHaveBeenCalledTimes(1);
   });
 
+  it("a plain message whose message run failed: the redelivery creates it once, and the chime was pinged once", async () => {
+    const u = msgUpdate(groupMsg(-100, 4));
+    vi.mocked(createRun).mockRejectedValueOnce(new Error("neon blip"));
+    expect(await webhook(u)).toBe(500);
+    expect(await db.select().from(runs)).toHaveLength(0);
+    expect(await webhook(u)).toBe(200);
+    expect(await webhook(u)).toBe(200);
+    const rows = await db.select().from(runs);
+    expect(rows.map((r) => r.trigger.type)).toEqual(["message"]);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(onHumanMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("a reaction whose createRun failed is answered on redelivery, once", async () => {
     expect(await webhook(msgUpdate(groupMsg(-100, 3)))).toBe(200);
     const r = reactionUpdate(-100, 3, user(11), [], ["👾"]);
@@ -84,7 +99,8 @@ describe("webhook idempotency", () => {
     expect(await webhook(r)).toBe(500);
     expect(await webhook(r)).toBe(200);
     expect(await webhook(r)).toBe(200);
-    const rows = await db.select().from(runs);
+    // The plain message has its own message run; the reaction got exactly one.
+    const rows = (await db.select().from(runs)).filter((x) => x.trigger.type === "reaction");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.trigger).toMatchObject({ type: "reaction", messageId: 3 });
   });
